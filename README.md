@@ -1,4 +1,4 @@
-## Visual Overview
+## Project Overview
 
 ```mermaid
 flowchart TD
