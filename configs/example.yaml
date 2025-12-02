@@ -1,0 +1,15 @@
+phenotype: phenotype.csv
+nifti_dir: /path/to/nifti
+atlas: /path/to/atlas.nii.gz
+atlas_type: labels
+site_col: SITE
+label_col: DX_GROUP
+age_col: AGE_AT_SCAN
+sex_col: SEX
+tr: 2.0
+window_size: 50
+step: 10
+n_states: 5
+cv_strategies: [stratified, group, site_stratified, loso]
+tune_models: true
+output_dir: experiment_results
