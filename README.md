@@ -3,36 +3,6 @@
 This project implements an end-to-end rs-fMRI pipeline to build individualized feature maps and normative deviations for Autism Spectrum classification using ABIDE PCP data. It includes atlas-based NIfTI→ROI extraction, dynamic connectivity features, ComBat harmonization, covariate-aware normative modeling, and site-aware cross-validation and model tuning.
 
 
-## Visual Overview
-
-```mermaid
-flowchart TD
-    A0["fMRI Time Series
-"]
-    A1["Brain Atlas / ROIs (Regions of Interest)
-"]
-    A2["Functional Connectivity (FC) Matrix
-"]
-    A3["Phenotypic Data
-"]
-    A4["Preprocessing and Filtering
-"]
-    A5["Machine Learning Models (Logistic Regression, SVM, CNN, etc.)
-"]
-    A6["Model Evaluation (Cross-Validation, Metrics)
-"]
-    A7["Feature Selection (SelectKBest, RFECV)
-"]
-    A1 -- "Defines/Extracts" --> A0
-    A4 -- "Filters/Processes" --> A0
-    A4 -- "Filters/Processes" --> A3
-    A0 -- "Calculates" --> A2
-    A2 -- "Provides Features" --> A7
-    A7 -- "Selects Features For" --> A5
-    A3 -- "Provides Labels" --> A5
-    A5 -- "Evaluates" --> A6
-```
-
 ## Structure
 
 - `asd_pipeline/atlas.py`: NIfTI to ROI time series extraction with `nilearn` (labels/maps).
@@ -51,6 +21,12 @@ flowchart TD
 - Install dependencies (prefer a virtual env): `python3 -m pip install -r requirements.txt`
 - Synthetic sanity check: `python3 scripts/demo_synthetic.py`
 - Run unit tests: `python3 -m unittest discover -s tests -p "test_*.py" -v`
+
+## Google Colab
+
+- Colab notebooks are under `colab_notebooks/`.
+- `ASD_Pipeline_Colab.ipynb` performs Drive mount, repo clone, atlas extraction, confounds, feature build with state metrics, ComBat harmonization, covariate-aware normative deviations, and model evaluation, saving outputs to Drive.
+- `ASD_Experiments_Colab.ipynb` runs the pipeline across CV strategies and writes JSON outputs to Drive.
 
 ## Data Preparation (ABIDE PCP)
 
