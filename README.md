@@ -1,4 +1,4 @@
-# ASD Project
+# ASD Project ![CI](https://github.com/arife-16/ASD-project/actions/workflows/ci.yml/badge.svg)
 
 This project implements an end-to-end rs-fMRI pipeline to build individualized feature maps and normative deviations for Autism Spectrum classification using ABIDE PCP data. It includes atlas-based NIfTI→ROI extraction, dynamic connectivity features, ComBat harmonization, covariate-aware normative modeling, and site-aware cross-validation and model tuning.
 
