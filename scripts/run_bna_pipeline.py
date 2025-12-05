@@ -89,7 +89,7 @@ def main():
                     np.save(os.path.join(roi_dir, f"{sid}.npy"), ts)
                     continue
             if args.nifti_dir:
-                nii = os.path.join(args.nifti_dir, f"{sid}.nii.gz")
+                nii = os.path.join(args.nifti_dir, f"{sid}_func_preproc.nii.gz")
                 if not os.path.exists(nii):
                     continue
                 ts = extract_roi_timeseries(nii, atlas_path, atlas_type="labels", tr=2.0, high_pass=0.01, low_pass=0.1)
