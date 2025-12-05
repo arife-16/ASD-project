@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import requests
 import argparse
+import glob
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from asd_pipeline.atlas import extract_roi_timeseries
@@ -19,6 +20,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--phenotype_path", type=str, default="")
     ap.add_argument("--nifti_dir", type=str, default="")
+    ap.add_argument("--nifti_pattern", type=str, default="")
     ap.add_argument("--timeseries_dir", type=str, default="")
     ap.add_argument("--atlas_path", type=str, default="")
     ap.add_argument("--labels_path", type=str, default="")
@@ -32,9 +34,9 @@ def main():
     os.makedirs(roi_dir, exist_ok=True)
     pheno_path = args.phenotype_path or os.path.join(out_dir, "phenotype.csv")
     pheno = pd.read_csv(pheno_path)
-    sids = pheno["SUB_ID"].astype(str).tolist()
+    ids = pheno["FILE_ID"].astype(str).tolist() if "FILE_ID" in pheno.columns else pheno["SUB_ID"].astype(str).tolist()
     if args.max_subjects and args.max_subjects > 0:
-        sids = sids[: args.max_subjects]
+        ids = ids[: args.max_subjects]
     third_party_dir = os.path.join(proj, "third_party", "autism_connectome")
     atlas_path = args.atlas_path or os.path.join(third_party_dir, "fullbrain_atlas_thr0-2mm.nii.gz")
     labels_path = args.labels_path or os.path.join(third_party_dir, "BNA_subregions.xlsx")
@@ -69,39 +71,63 @@ def main():
     if use_bna:
         from asd_pipeline.atlas_labels import load_bna_labels
         names, networks = load_bna_labels(labels_path)
-    need_extraction = any(not os.path.exists(os.path.join(roi_dir, f"{sid}.npy")) for sid in sids)
+    need_extraction = any(not os.path.exists(os.path.join(roi_dir, f"{sid}.npy")) for sid in ids)
     if need_extraction:
         if not use_bna:
             from nilearn import datasets
             ho = datasets.fetch_atlas_harvard_oxford("cort-maxprob-thr25-2mm")
             atlas_path = ho["maps"]
-        for sid in sids:
+        for sid in ids:
             if args.timeseries_dir:
-                ts_path_npy = os.path.join(args.timeseries_dir, f"{sid}.npy")
-                ts_path_1d = os.path.join(args.timeseries_dir, f"{sid}.1D")
-                if os.path.exists(ts_path_npy):
-                    ts = np.load(ts_path_npy)
+                exact_npy = os.path.join(args.timeseries_dir, f"{sid}.npy")
+                exact_1d = os.path.join(args.timeseries_dir, f"{sid}.1D")
+                if os.path.exists(exact_npy):
+                    ts = np.load(exact_npy)
                     np.save(os.path.join(roi_dir, f"{sid}.npy"), ts)
                     continue
-                if os.path.exists(ts_path_1d):
-                    arr = np.loadtxt(ts_path_1d)
+                if os.path.exists(exact_1d):
+                    arr = np.loadtxt(exact_1d)
                     ts = arr.T if arr.shape[0] > arr.shape[1] else arr
                     np.save(os.path.join(roi_dir, f"{sid}.npy"), ts)
                     continue
+                g1 = glob.glob(os.path.join(args.timeseries_dir, f"{sid}_*.1D"))
+                if g1:
+                    arr = np.loadtxt(g1[0])
+                    ts = arr.T if arr.shape[0] > arr.shape[1] else arr
+                    np.save(os.path.join(roi_dir, f"{sid}.npy"), ts)
+                    continue
+                g2 = glob.glob(os.path.join(args.timeseries_dir, f"{sid}_*.npy"))
+                if g2:
+                    ts = np.load(g2[0])
+                    np.save(os.path.join(roi_dir, f"{sid}.npy"), ts)
+                    continue
             if args.nifti_dir:
-                nii = os.path.join(args.nifti_dir, f"{SITE}_{sid}_func_preproc.nii.gz")
-                if not os.path.exists(nii):
+                candidates = []
+                if args.nifti_pattern:
+                    candidates.append(os.path.join(args.nifti_dir, args.nifti_pattern.format(SUB_ID=sid, FILE_ID=sid)))
+                candidates.extend([
+                    os.path.join(args.nifti_dir, f"{sid}.nii.gz"),
+                    os.path.join(args.nifti_dir, f"{sid}_func_preproc.nii.gz"),
+                    os.path.join(args.nifti_dir, f"{sid}_bold.nii.gz"),
+                    os.path.join(args.nifti_dir, f"{sid}_bold_preproc.nii.gz"),
+                ])
+                nii = next((p for p in candidates if os.path.exists(p)), "")
+                if not nii:
                     continue
                 ts = extract_roi_timeseries(nii, atlas_path, atlas_type="labels", tr=2.0, high_pass=0.01, low_pass=0.1)
                 ts = regress_confounds(ts, confounds=None, tr=2.0, high_pass=0.01, low_pass=0.1)
                 np.save(os.path.join(roi_dir, f"{sid}.npy"), ts)
+    available_sids = [sid for sid in ids if os.path.exists(os.path.join(roi_dir, f"{sid}.npy"))]
+    if not available_sids:
+        raise FileNotFoundError("No ROI time series found or generated; provide --nifti_dir with <SUB_ID>.nii.gz or --timeseries_dir with <SUB_ID>.npy/.1D")
     feats = []
-    for sid in sids:
+    for sid in available_sids:
         ts = np.load(os.path.join(roi_dir, f"{sid}.npy"))
         vec, _ = build_connectome_feature_vector(ts, window_size=30, step=15, thr=0.4, networks=networks, compute_partial=False)
         feats.append(vec)
     X = np.stack(feats, axis=0)
-    ph_sub = pheno[pheno["SUB_ID"].astype(str).isin(sids)].copy()
+    key_col = "FILE_ID" if "FILE_ID" in pheno.columns else "SUB_ID"
+    ph_sub = pheno[pheno[key_col].astype(str).isin(available_sids)].copy()
     y = ph_sub["DX_GROUP"].values.astype(int)
     td_mask = y == 2
     covars = ph_sub[["AGE_AT_SCAN", "SEX"]].values.astype(float)
