@@ -3,6 +3,7 @@ import sys
 import argparse
 import shutil
 import subprocess
+import requests
 
 
 def install_pcntoolkit():
@@ -33,6 +34,22 @@ def ensure_bna_assets(src_dir: str, dest_dir: str):
     return copied
 
 
+def download_if_url(name: str, url: str, dest_path: str):
+    if not url:
+        return False
+    try:
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        with requests.get(url, stream=True) as r:
+            r.raise_for_status()
+            with open(dest_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+        return True
+    except Exception:
+        return False
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bna_src", type=str, default=os.path.expanduser("~/Downloads/Autism-Connectome-Analysis-master"))
@@ -41,7 +58,23 @@ def main():
 
     ok_pcn = install_pcntoolkit()
     copied = ensure_bna_assets(args.bna_src, args.dest)
-    print({"pcntoolkit_installed": ok_pcn, "bna_copied": copied, "dest": args.dest})
+    atlas_url = os.environ.get("BNA_ATLAS_URL", "")
+    labels_url = os.environ.get("BNA_LABELS_URL", "")
+    atlas_path = os.path.join(args.dest, "fullbrain_atlas_thr0-2mm.nii.gz")
+    labels_path = os.path.join(args.dest, "BNA_subregions.xlsx")
+    if not os.path.exists(atlas_path) and atlas_url:
+        if download_if_url("atlas", atlas_url, atlas_path):
+            copied.append(atlas_path)
+    if not os.path.exists(labels_path) and labels_url:
+        if download_if_url("labels", labels_url, labels_path):
+            copied.append(labels_path)
+    print({
+        "pcntoolkit_installed": ok_pcn,
+        "bna_copied": copied,
+        "dest": args.dest,
+        "atlas_present": os.path.exists(atlas_path),
+        "labels_present": os.path.exists(labels_path),
+    })
 
 
 if __name__ == "__main__":

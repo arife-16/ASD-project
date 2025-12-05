@@ -28,6 +28,17 @@ def main():
     atlas_path = os.path.join(third_party_dir, "fullbrain_atlas_thr0-2mm.nii.gz")
     labels_path = os.path.join(third_party_dir, "BNA_subregions.xlsx")
     use_bna = os.path.exists(atlas_path) and os.path.exists(labels_path)
+    import argparse
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("--strict_bna", action="store_true")
+    try:
+        args, _ = ap.parse_known_args()
+    except SystemExit:
+        class _A:
+            strict_bna = False
+        args = _A()
+    if args.strict_bna and not use_bna:
+        raise RuntimeError("BNA atlas/labels not found under third_party/autism_connectome and strict mode is enabled")
     networks = None
     if use_bna:
         from asd_pipeline.atlas_labels import load_bna_labels
