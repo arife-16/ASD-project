@@ -24,8 +24,9 @@ def main():
     max_n = int(os.environ.get("MAX_SUBJECTS", "0"))
     if max_n > 0:
         sids = sids[:max_n]
-    atlas_path = os.path.expanduser("~/Downloads/Autism-Connectome-Analysis-master/atlas/Full_brain_atlas_thr0-2mm/fullbrain_atlas_thr0-2mm.nii.gz")
-    labels_path = os.path.expanduser("~/Downloads/Autism-Connectome-Analysis-master/atlas/BNA_subregions.xlsx")
+    third_party_dir = os.path.join(proj, "third_party", "autism_connectome")
+    atlas_path = os.path.join(third_party_dir, "fullbrain_atlas_thr0-2mm.nii.gz")
+    labels_path = os.path.join(third_party_dir, "BNA_subregions.xlsx")
     use_bna = os.path.exists(atlas_path) and os.path.exists(labels_path)
     networks = None
     if use_bna:
