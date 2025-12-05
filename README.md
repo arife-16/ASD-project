@@ -9,6 +9,8 @@ This project implements an end-to-end rs-fMRI pipeline to build individualized f
 - `asd_pipeline/preprocess.py`: Confound regression and bandpass cleaning.
 - `asd_pipeline/confounds.py`: Motion TSV and WM/CSF tissue signal confound construction.
 - `asd_pipeline/features.py`: Static FC, dynamic FC (windowed mean/std), ALFF, k-means state metrics (occupancy, transitions, dwell mean/std, entropy, asymmetry).
+- `asd_pipeline/connectome.py`: Connectome metrics including FC, partial correlation, node strength, clustering, and network-level intra/inter connectivity with dynamic summaries.
+- `asd_pipeline/atlas_labels.py`: Atlas label adapters (BNA Excel labels) for neuroscientific reporting.
 - `asd_pipeline/harmonize.py`: Site harmonization via ComBat with age/sex covariates.
 - `asd_pipeline/normative.py`: Covariate-aware residualization and MVN-based personalized deviation maps (z-scores, Mahalanobis).
 - `asd_pipeline/model.py`: Site-aware CV (Stratified/Group/LOSO/Site-stratified), model tuning (logistic L2, elastic net, calibrated linear SVM), optional normative deviation feature selector.
@@ -44,6 +46,12 @@ This project implements an end-to-end rs-fMRI pipeline to build individualized f
 
 - Outputs include cross-validated metrics per model or per strategy when tuning is enabled.
 
+### BNA Atlas Integration
+
+- Use BNA atlas at `~/Downloads/Autism-Connectome-Analysis-master/atlas/Full_brain_atlas_thr0-2mm/fullbrain_atlas_thr0-2mm.nii.gz`.
+- Labels from `~/Downloads/Autism-Connectome-Analysis-master/atlas/BNA_subregions.xlsx` are used for ROI names and networks when available.
+- Example: `python3 scripts/run_bna_pipeline.py`
+
 ## Experiment Runner
 
 - Configure experiments in YAML (see `configs/example.yaml`).
@@ -57,7 +65,7 @@ This project implements an end-to-end rs-fMRI pipeline to build individualized f
 - ALFF: low-frequency power per ROI (`asd_pipeline/features.py:40`).
 - State metrics: k-means over windowed FC vectors; occupancy, transition probabilities, dwell mean/std, entropy, asymmetry (`asd_pipeline/features.py:87`).
 - ComBat: site harmonization with age (continuous) and sex (categorical) covariates (`asd_pipeline/harmonize.py:7`).
-- Normative deviations: covariate residualization then MVN fit on TD → per-feature z-scores and Mahalanobis per subject (`asd_pipeline/normative.py:27`).
+- Normative deviations: covariate residualization then MVN fit on TD → per-feature z-scores and Mahalanobis per subject (`asd_pipeline/normative.py:27`). Optionally, PCNtoolkit-based normative modeling via `scripts/run_pcn_normative.py` will fit a normative model using Bayesian regression and output subject z-scores and plots.
 
 ## Cross-Validation Strategies
 
