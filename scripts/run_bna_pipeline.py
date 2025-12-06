@@ -28,7 +28,8 @@ def main():
     ap.add_argument("--out_dir", type=str, default=os.path.join(proj, "experiment_results"))
     ap.add_argument("--max_subjects", type=int, default=int(os.environ.get("MAX_SUBJECTS", "0")))
     args = ap.parse_args()
-    out_dir = args.out_dir
+    out_dir = args.out_dir or os.path.join(proj, "experiment_results")
+    args.out_dir = out_dir
     os.makedirs(out_dir, exist_ok=True)
     roi_dir = os.path.join(out_dir, "_roi_ts")
     os.makedirs(roi_dir, exist_ok=True)
