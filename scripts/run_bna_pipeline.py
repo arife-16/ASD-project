@@ -16,6 +16,7 @@ from asd_pipeline.preprocess import regress_confounds
 from asd_pipeline.connectome import build_connectome_feature_vector
 from asd_pipeline.normative import personalized_deviation_maps
 from asd_pipeline.model import evaluate_models
+from asd_pipeline.features import dynamic_fc_sequence
 
 
 def main():
@@ -34,6 +35,7 @@ def main():
     ap.add_argument("--pipeline_stage", type=str, default=os.environ.get("BNA_STAGE", "all"))
     ap.add_argument("--roi_dir", type=str, default="")
     ap.add_argument("--features_dir", type=str, default="")
+    ap.add_argument("--sequence_dir", type=str, default="")
     ap.add_argument("--index_path", type=str, default="")
     ap.add_argument("--copy_to_local", action="store_true")
     args = ap.parse_args()
@@ -48,9 +50,11 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     roi_dir = args.roi_dir or os.path.join(out_dir, "_roi_ts")
     features_dir = args.features_dir or os.path.join(out_dir, "_features")
+    sequence_dir = args.sequence_dir or os.path.join(out_dir, "_seq_fc")
     index_path = args.index_path or os.path.join(out_dir, "match_index.json")
     os.makedirs(roi_dir, exist_ok=True)
     os.makedirs(features_dir, exist_ok=True)
+    os.makedirs(sequence_dir, exist_ok=True)
     cache_dir = os.path.join(out_dir, "_cache_nii")
     os.makedirs(cache_dir, exist_ok=True)
 
@@ -232,7 +236,7 @@ def main():
 
     stage = (args.pipeline_stage or "all").lower()
     idx = None
-    if stage in ["discover", "timeseries", "features", "normative", "models", "all"]:
+    if stage in ["discover", "timeseries", "features", "sequence", "normative", "models", "all"]:
         if os.path.exists(index_path):
             try:
                 with open(index_path, "r") as f:
@@ -286,6 +290,23 @@ def main():
                 n_saved += 1
             if stage == "features":
                 print(json.dumps({"features_saved": n_saved}))
+                return
+        if stage in ["sequence", "all"]:
+            n_saved = 0
+            for it in idx:
+                sid = str(it["sid"])
+                tsp = os.path.join(roi_dir, f"{sid}.npy")
+                outp = os.path.join(sequence_dir, f"{sid}.npz")
+                if os.path.exists(outp):
+                    continue
+                if not os.path.exists(tsp):
+                    continue
+                ts = np.load(tsp)
+                seq = dynamic_fc_sequence(ts, window_size=30, step=15)
+                np.savez(outp, fc_vectors=seq["fc_vectors"], window_indices=seq["window_indices"]) 
+                n_saved += 1
+            if stage == "sequence":
+                print(json.dumps({"sequence_saved": n_saved}))
                 return
         if stage in ["normative", "models", "all"]:
             feats = []
