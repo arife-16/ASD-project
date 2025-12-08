@@ -126,3 +126,64 @@ This report documents the rs-fMRI pipeline for ASD classification implemented in
 - Models and CV: `asd_pipeline/model.py:29`, `asd_pipeline/model.py:58`.
 - Orchestration: `scripts/run_pipeline.py:43`.
 
+## BNA Atlas Report
+
+- Purpose
+  - Uses the Brainnetome (BNA) atlas to parcellate rs-fMRI into ROI time series and derive network-aware connectivity features for ASD analysis.
+- Files and Location
+  - Atlas image: `third_party/autism_connectome/fullbrain_atlas_thr0-2mm.nii.gz`.
+  - Labels: `third_party/autism_connectome/BNA_subregions.xlsx`.
+  - Resolved at runtime in `scripts/run_bna_pipeline.py:43–46` and verified in strict mode at `scripts/run_bna_pipeline.py:71–72`.
+- Strict Mode and Fallback
+  - When `--strict_bna` is set, the pipeline requires both atlas and labels; else raises an error: `scripts/run_bna_pipeline.py:71–72`.
+  - If BNA is not available and strict mode is off, it falls back to Harvard–Oxford (`cort-maxprob-thr25-2mm`) at `scripts/run_bna_pipeline.py:79–82`.
+- Label and Network Mapping
+  - Labels and optional network assignments are loaded from the Excel file via `asd_pipeline/atlas_labels.py:6–23`.
+  - The loader auto-detects name and network columns and returns `[names], [networks]` (networks may be `None`).
+- ROI Extraction
+  - Per subject, the pipeline extracts ROI time series with `NiftiLabelsMasker` using the BNA atlas image and bandpass/standardization parameters: `asd_pipeline/atlas.py:7–29`.
+  - Parameters used by the BNA pipeline: `tr=2.0`, `high_pass=0.01`, `low_pass=0.1`, `standardize="zscore"`, `detrend=True`: `scripts/run_bna_pipeline.py:120–122`.
+  - Time series are saved under `out_dir/_roi_ts/<SUB_ID>.npy`: `scripts/run_bna_pipeline.py:34–35, 121–122`.
+- NIfTI Discovery and Naming
+  - The pipeline supports custom file naming via `--nifti_pattern` and now accepts `{SUB_ID}`, `{FILE_ID}`, and `{SITE}` placeholders: `scripts/run_bna_pipeline.py:108–116`.
+  - If no pattern is provided, it tries common names: `<SUB_ID>.nii.gz`, `<SUB_ID>_func_preproc.nii.gz`, `<SUB_ID>_bold.nii.gz`, `<SUB_ID>_bold_preproc.nii.gz`: `scripts/run_bna_pipeline.py:112–116`.
+  - Subject IDs originate from phenotype `FILE_ID` when available, otherwise `SUB_ID`: `scripts/run_bna_pipeline.py:40–42`.
+- Phenotype Requirements
+  - Required columns: `SUB_ID` or `FILE_ID`, `DX_GROUP`, `AGE_AT_SCAN`, `SEX`, `SITE`.
+  - The pipeline reads `--phenotype_path` or `out_dir/phenotype.csv`, with a clear error if missing: `scripts/run_bna_pipeline.py:36–39`.
+- Feature Engineering
+  - After ROI extraction, it builds a connectome feature vector per subject (static FC, partial correlation, graph summaries, network means): `asd_pipeline/connectome.py:12–48, 165–178`.
+  - Network-aware aggregations use the BNA networks returned by `load_bna_labels`: passed as `networks` in `scripts/run_bna_pipeline.py:129–131`.
+- Normative Deviations and Evaluation
+  - TD-only reference distribution is used to compute per-feature z-scores and subject-level deviations: `asd_pipeline/normative.py:25–60`.
+  - Site-aware CV (`site_stratified`) evaluates classification performance on deviation features: `scripts/run_bna_pipeline.py:139–143`.
+- Drive Integration and Reproducibility
+  - Paths can point to Google Drive for phenotype, NIfTI, atlas, and output directories. Use `--nifti_pattern` with `{SITE}` to match ABIDE naming (e.g., `Caltech_0051456_func_preproc.nii.gz`).
+  - Recommended command:
+    - `python scripts/run_bna_pipeline.py --phenotype_path "/content/drive/MyDrive/ABIDE_Project/phenotype.csv" --nifti_dir "/content/drive/MyDrive/ABIDE_Project/NIFTI" --nifti_pattern "{SITE}_{FILE_ID}_func_preproc.nii.gz" --atlas_path "/content/drive/MyDrive/ABIDE_Project/BNA/fullbrain_atlas_thr0-2mm.nii.gz" --labels_path "/content/drive/MyDrive/ABIDE_Project/BNA/BNA_subregions.xlsx" --strict_bna --out_dir "/content/drive/MyDrive/ABIDE_Project/ASD_Results"`.
+- Outputs
+  - ROI time series: `out_dir/_roi_ts/*.npy`.
+  - Feature matrix summary and model metrics: `out_dir/bna_results.json` from `scripts/run_bna_pipeline.py:141–145`.
+  - Intermediate arrays kept in memory during feature construction; per-subject vectors are stacked at `scripts/run_bna_pipeline.py:131–134`.
+
+### Neuroscientific Approach
+
+- Connectivity-based parcellation
+  - BNA defines subregions by grouping voxels with similar long-range connectivity profiles derived from diffusion MRI tractography (structural) and resting-state fMRI correlations (functional).
+  - Each subregion has a “connectivity fingerprint” that captures its preferential connections across the brain; boundaries are placed to maximize within-region homogeneity and between-region separability.
+- Multimodal validation and hierarchy
+  - Parcellation is validated across modalities and cohorts for reproducibility; boundaries respect macroanatomy while subdividing large gyri into finer units to reflect functional specialization.
+  - Hemispheric symmetry and hierarchical organization ensure that subregions map consistently across left/right hemispheres and across scales.
+- Network assignment
+  - Subregions are assigned to large-scale canonical systems (e.g., default-mode, attention, somatomotor, visual, limbic, frontoparietal control, salience) based on their connectivity fingerprints and literature alignment.
+  - The Excel labels file provides the network membership used by the pipeline: `asd_pipeline/atlas_labels.py:6–23`.
+- Extraction and signal model
+  - ROI signals represent region-level averages after detrending, bandpass filtering (0.01–0.1 Hz), and standardization; see `asd_pipeline/atlas.py:7–29`.
+  - This frequency band targets spontaneous neural fluctuations typical in rs-fMRI while reducing physiological noise, enabling stable functional connectivity estimates.
+- Implications for ASD analysis
+  - Region-level signals and network membership enable system-level summaries (intra- and inter-network connectivity), which are sensitive to ASD-related dysconnectivity hypotheses.
+  - Personalized deviations measured against TD-only distributions quantify atypical connectivity at the feature level and support subject-specific interpretation.
+- Limitations and considerations
+  - BNA is derived primarily from healthy populations; pediatric or clinical cohorts may exhibit anatomical/functional shifts that reduce atlas alignment fidelity.
+  - Small subregions can be susceptible to partial volume and registration errors; careful QC and motion/confound regression mitigate these risks (`asd_pipeline/preprocess.py:7`).
+  - Site effects in ABIDE require harmonization and site-aware evaluation to avoid confounding interpretations (`asd_pipeline/harmonize.py:7`, `scripts/run_bna_pipeline.py:139–143`).

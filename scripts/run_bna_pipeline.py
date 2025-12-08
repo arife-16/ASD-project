@@ -28,14 +28,27 @@ def main():
     ap.add_argument("--out_dir", type=str, default=os.path.join(proj, "experiment_results"))
     ap.add_argument("--max_subjects", type=int, default=int(os.environ.get("MAX_SUBJECTS", "0")))
     args = ap.parse_args()
+    args.phenotype_path = args.phenotype_path or os.environ.get("PHENO", "")
+    args.nifti_dir = args.nifti_dir or os.environ.get("NIFTI_DIR", "")
+    args.nifti_pattern = args.nifti_pattern or os.environ.get("NIFTI_PATTERN", "")
+    args.atlas_path = args.atlas_path or os.environ.get("ATLAS_PATH", "")
+    args.labels_path = args.labels_path or os.environ.get("LABELS_PATH", "")
+    args.out_dir = args.out_dir or os.environ.get("OUT_BNA", os.path.join(proj, "experiment_results"))
     out_dir = args.out_dir or os.path.join(proj, "experiment_results")
     args.out_dir = out_dir
     os.makedirs(out_dir, exist_ok=True)
     roi_dir = os.path.join(out_dir, "_roi_ts")
     os.makedirs(roi_dir, exist_ok=True)
     pheno_path = args.phenotype_path or os.path.join(out_dir, "phenotype.csv")
+    if not pheno_path or not os.path.exists(pheno_path):
+        raise FileNotFoundError(f"Phenotype CSV not found at '{pheno_path}'. Provide --phenotype_path pointing to your Drive CSV.")
     pheno = pd.read_csv(pheno_path)
     ids = pheno["FILE_ID"].astype(str).tolist() if "FILE_ID" in pheno.columns else pheno["SUB_ID"].astype(str).tolist()
+    key_col = "FILE_ID" if "FILE_ID" in pheno.columns else "SUB_ID"
+    site_by_id = {}
+    if "SITE" in pheno.columns:
+        for _, row in pheno.iterrows():
+            site_by_id[str(row[key_col])] = str(row["SITE"]) if not pd.isna(row["SITE"]) else ""
     if args.max_subjects and args.max_subjects > 0:
         ids = ids[: args.max_subjects]
     third_party_dir = os.path.join(proj, "third_party", "autism_connectome")
@@ -105,12 +118,10 @@ def main():
             if args.nifti_dir:
                 candidates = []
                 if args.nifti_pattern:
-                    candidates.append(os.path.join(args.nifti_dir, args.nifti_pattern.format(SUB_ID=sid, FILE_ID=sid)))
+                    site = site_by_id.get(sid, "")
+                    candidates.append(os.path.join(args.nifti_dir, args.nifti_pattern.format(SUB_ID=sid, FILE_ID=sid, SITE=site)))
                 candidates.extend([
-                    os.path.join(args.nifti_dir, f"{sid}.nii.gz"),
                     os.path.join(args.nifti_dir, f"{sid}_func_preproc.nii.gz"),
-                    os.path.join(args.nifti_dir, f"{sid}_bold.nii.gz"),
-                    os.path.join(args.nifti_dir, f"{sid}_bold_preproc.nii.gz"),
                 ])
                 nii = next((p for p in candidates if os.path.exists(p)), "")
                 if not nii:
