@@ -27,6 +27,7 @@ def main():
     ap.add_argument("--strict_bna", action="store_true")
     ap.add_argument("--out_dir", type=str, default=os.path.join(proj, "experiment_results"))
     ap.add_argument("--max_subjects", type=int, default=int(os.environ.get("MAX_SUBJECTS", "0")))
+    ap.add_argument("--debug_paths", action="store_true")
     args = ap.parse_args()
     args.phenotype_path = args.phenotype_path or os.environ.get("PHENO", "")
     args.nifti_dir = args.nifti_dir or os.environ.get("NIFTI_DIR", "")
@@ -50,6 +51,8 @@ def main():
     if "SITE" in pheno.columns:
         for _, row in pheno.iterrows():
             site_by_id[str(row[key_col])] = str(row["SITE"]) if not pd.isna(row["SITE"]) else ""
+    if not args.nifti_dir or not os.path.isdir(args.nifti_dir):
+        raise FileNotFoundError(f"NIFTI directory not found at '{args.nifti_dir}'. Mount Drive and set --nifti_dir to the folder containing .nii.gz files.")
     if args.max_subjects and args.max_subjects > 0:
         ids = ids[: args.max_subjects]
     third_party_dir = os.path.join(proj, "third_party", "autism_connectome")
@@ -93,24 +96,40 @@ def main():
         atlas_path = ho["maps"]
     feats = []
     found_ids = []
+    debug_missing = []
     for sid in ids:
         if not args.nifti_dir:
             continue
         candidates = []
+        site = site_by_id.get(sid, "") if 'site_by_id' in locals() else ""
+        site_variants = [site]
+        if site:
+            site_variants += [site.lower(), site.upper(), site.title(), site.replace(" ", "_")]
         if args.nifti_pattern:
-            site = site_by_id.get(sid, "") if 'site_by_id' in locals() else ""
-            candidates.append(os.path.join(args.nifti_dir, args.nifti_pattern.format(SUB_ID=sid, FILE_ID=sid, SITE=site)))
+            for sv in site_variants:
+                try:
+                    candidates.append(os.path.join(args.nifti_dir, args.nifti_pattern.format(SUB_ID=sid, FILE_ID=sid, SITE=sv)))
+                except Exception:
+                    pass
         candidates.extend([
             os.path.join(args.nifti_dir, f"{sid}.nii.gz"),
             os.path.join(args.nifti_dir, f"{sid}_func_preproc.nii.gz"),
             os.path.join(args.nifti_dir, f"{sid}_func_preprop.nii.gz"),
             os.path.join(args.nifti_dir, f"{sid}_bold.nii.gz"),
             os.path.join(args.nifti_dir, f"{sid}_bold_preproc.nii.gz"),
-            os.path.join(args.nifti_dir, f"{site}_{sid}_func_preproc.nii.gz") if 'site' in locals() and site else "",
         ])
+        if site:
+            candidates.extend([
+                os.path.join(args.nifti_dir, f"{site}_{sid}_func_preproc.nii.gz"),
+                os.path.join(args.nifti_dir, f"{site}-{sid}_func_preproc.nii.gz"),
+                os.path.join(args.nifti_dir, f"{site}_{sid}_func_preprop.nii.gz"),
+                os.path.join(args.nifti_dir, f"{site}_{sid}_bold.nii.gz"),
+            ])
         candidates = [p for p in candidates if p]
         nii = next((p for p in candidates if os.path.isfile(p)), "")
         if not nii:
+            if args.debug_paths:
+                debug_missing.append({"sid": sid, "site": site, "candidates": candidates})
             continue
         ts = extract_roi_timeseries(nii, atlas_path, atlas_type="labels", tr=2.0, high_pass=0.01, low_pass=0.1)
         ts = regress_confounds(ts, confounds=None, tr=2.0, high_pass=0.01, low_pass=0.1)
@@ -118,7 +137,10 @@ def main():
         feats.append(vec)
         found_ids.append(sid)
     if not feats:
-        raise FileNotFoundError("No NIFTI files matched. Check --nifti_dir and --nifti_pattern (supports {SUB_ID},{FILE_ID},{SITE}).")
+        if args.debug_paths and debug_missing:
+            sample = debug_missing[:3]
+            print(json.dumps({"debug_no_matches": sample}, indent=2))
+        raise FileNotFoundError("No NIFTI files matched. Verify --nifti_dir exists and --nifti_pattern. Pattern supports {SUB_ID},{FILE_ID},{SITE}. Consider --debug_paths to print attempted paths.")
     X = np.stack(feats, axis=0)
     key_col = "FILE_ID" if "FILE_ID" in pheno.columns else "SUB_ID"
     ph_sub = pheno[pheno[key_col].astype(str).isin(found_ids)].copy()
