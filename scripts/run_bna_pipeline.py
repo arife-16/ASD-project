@@ -99,11 +99,17 @@ def main():
         candidates = []
         if args.nifti_pattern:
             site = site_by_id.get(sid, "") if 'site_by_id' in locals() else ""
-            candidates.append(os.path.join(args.nifti_dir, args.nifti_pattern.format(FILE_ID=sid, SITE=site)))
-        candidates.extend(
-            os.path.join(args.nifti_dir, f"{sid}_func_preproc.nii.gz")
-        )
-        nii = next((p for p in candidates if os.path.exists(p)), "")
+            candidates.append(os.path.join(args.nifti_dir, args.nifti_pattern.format(SUB_ID=sid, FILE_ID=sid, SITE=site)))
+        candidates.extend([
+            os.path.join(args.nifti_dir, f"{sid}.nii.gz"),
+            os.path.join(args.nifti_dir, f"{sid}_func_preproc.nii.gz"),
+            os.path.join(args.nifti_dir, f"{sid}_func_preprop.nii.gz"),
+            os.path.join(args.nifti_dir, f"{sid}_bold.nii.gz"),
+            os.path.join(args.nifti_dir, f"{sid}_bold_preproc.nii.gz"),
+            os.path.join(args.nifti_dir, f"{site}_{sid}_func_preproc.nii.gz") if 'site' in locals() and site else "",
+        ])
+        candidates = [p for p in candidates if p]
+        nii = next((p for p in candidates if os.path.isfile(p)), "")
         if not nii:
             continue
         ts = extract_roi_timeseries(nii, atlas_path, atlas_type="labels", tr=2.0, high_pass=0.01, low_pass=0.1)
