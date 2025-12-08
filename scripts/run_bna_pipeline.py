@@ -39,9 +39,11 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     roi_dir = os.path.join(out_dir, "_roi_ts")
     os.makedirs(roi_dir, exist_ok=True)
-    pheno_path = args.phenotype_path or os.path.join(out_dir, "phenotype.csv")
-    if not pheno_path or not os.path.exists(pheno_path):
-        raise FileNotFoundError(f"Phenotype CSV not found at '{pheno_path}'. Provide --phenotype_path pointing to your Drive CSV.")
+    pheno_path = args.phenotype_path
+    if not pheno_path:
+        raise FileNotFoundError("Phenotype CSV path not provided. Set --phenotype_path or PHENO environment variable to your Drive CSV.")
+    if not os.path.exists(pheno_path):
+        raise FileNotFoundError(f"Phenotype CSV not found at '{pheno_path}'. Check the path or set PHENO env to your Drive CSV.")
     pheno = pd.read_csv(pheno_path)
     ids = pheno["FILE_ID"].astype(str).tolist() if "FILE_ID" in pheno.columns else pheno["SUB_ID"].astype(str).tolist()
     key_col = "FILE_ID" if "FILE_ID" in pheno.columns else "SUB_ID"
