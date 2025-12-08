@@ -6,6 +6,7 @@ import pandas as pd
 import requests
 import argparse
 import glob
+import re
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from asd_pipeline.atlas import extract_roi_timeseries
@@ -45,12 +46,21 @@ def main():
     if not os.path.exists(pheno_path):
         raise FileNotFoundError(f"Phenotype CSV not found at '{pheno_path}'. Check the path or set PHENO env to your Drive CSV.")
     pheno = pd.read_csv(pheno_path)
-    ids = pheno["FILE_ID"].astype(str).tolist() if "FILE_ID" in pheno.columns else pheno["SUB_ID"].astype(str).tolist()
-    key_col = "FILE_ID" if "FILE_ID" in pheno.columns else "SUB_ID"
+    def pick_col(df, choices):
+        for c in choices:
+            if c in df.columns:
+                return c
+        return ""
+    key_col = "FILE_ID" if "FILE_ID" in pheno.columns else ("SUB_ID" if "SUB_ID" in pheno.columns else "")
+    if not key_col:
+        kc = pick_col(pheno, ["FILE_ID", "SUB_ID", "SUBID", "subject_id", "ID"])
+        key_col = kc
+    ids = pheno[key_col].astype(str).tolist()
     site_by_id = {}
-    if "SITE" in pheno.columns:
+    site_col = pick_col(pheno, ["SITE", "site", "Site", "SITE_NAME"]) 
+    if site_col:
         for _, row in pheno.iterrows():
-            site_by_id[str(row[key_col])] = str(row["SITE"]) if not pd.isna(row["SITE"]) else ""
+            site_by_id[str(row[key_col])] = str(row[site_col]) if not pd.isna(row[site_col]) else ""
     if not args.nifti_dir or not os.path.isdir(args.nifti_dir):
         raise FileNotFoundError(f"NIFTI directory not found at '{args.nifti_dir}'. Mount Drive and set --nifti_dir to the folder containing .nii.gz files.")
     if args.max_subjects and args.max_subjects > 0:
@@ -96,6 +106,45 @@ def main():
         atlas_path = ho["maps"]
     feats = []
     found_ids = []
+    all_niftis = glob.glob(os.path.join(args.nifti_dir, "**", "*.nii.gz"), recursive=True) if args.nifti_dir else []
+    patts = [
+        re.compile(r"^(?P<site>[A-Za-z0-9]+)[_-](?P<fileid>\d+)_func_preproc\.nii\.gz$"),
+        re.compile(r"^(?P<site>[A-Za-z0-9]+)[_-](?P<fileid>\d+)_func_preprop\.nii\.gz$"),
+        re.compile(r"^(?P<site>[A-Za-z0-9]+)[_-](?P<fileid>\d+)_bold(?:_preproc)?\.nii\.gz$"),
+        re.compile(r"^(?P<fileid>\d+)_func_preproc\.nii\.gz$"),
+        re.compile(r"^(?P<subid>\d+)\.nii\.gz$"),
+        re.compile(r"^sub-(?P<subid>\d+)_task-rest_bold\.nii\.gz$"),
+        re.compile(r"^(?P<fileid>\d+)_bold\.nii\.gz$"),
+        re.compile(r"^(?P<site>[A-Za-z0-9]+)[_-](?P<subid>\d+)\.nii\.gz$"),
+    ]
+    by_file_site = {}
+    by_sub_site = {}
+    by_file = {}
+    by_sub = {}
+    for fp in all_niftis:
+        bn = os.path.basename(fp)
+        m = None
+        for r in patts:
+            mm = r.match(bn)
+            if mm:
+                m = mm
+                break
+        if not m:
+            continue
+        gd = m.groupdict()
+        fileid = gd.get("fileid", "")
+        subid = gd.get("subid", "")
+        sitev = gd.get("site", "")
+        if fileid:
+            by_file[fileid] = by_file.get(fileid, fp)
+            if sitev:
+                for sv in [sitev, sitev.lower(), sitev.upper(), sitev.title(), sitev.replace(" ", "_")]:
+                    by_file_site[(fileid, sv)] = fp
+        if subid:
+            by_sub[subid] = by_sub.get(subid, fp)
+            if sitev:
+                for sv in [sitev, sitev.lower(), sitev.upper(), sitev.title(), sitev.replace(" ", "_")]:
+                    by_sub_site[(subid, sv)] = fp
     debug_missing = []
     for sid in ids:
         if not args.nifti_dir:
@@ -111,6 +160,20 @@ def main():
                     candidates.append(os.path.join(args.nifti_dir, args.nifti_pattern.format(SUB_ID=sid, FILE_ID=sid, SITE=sv)))
                 except Exception:
                     pass
+        else:
+            for sv in site_variants:
+                if key_col == "FILE_ID":
+                    p = by_file_site.get((sid, sv), "")
+                    if p:
+                        candidates.append(p)
+                elif key_col == "SUB_ID":
+                    p = by_sub_site.get((sid, sv), "")
+                    if p:
+                        candidates.append(p)
+            if key_col == "FILE_ID" and sid in by_file:
+                candidates.append(by_file[sid])
+            if key_col == "SUB_ID" and sid in by_sub:
+                candidates.append(by_sub[sid])
         candidates.extend([
             os.path.join(args.nifti_dir, f"{sid}.nii.gz"),
             os.path.join(args.nifti_dir, f"{sid}_func_preproc.nii.gz"),
@@ -142,14 +205,22 @@ def main():
             print(json.dumps({"debug_no_matches": sample}, indent=2))
         raise FileNotFoundError("No NIFTI files matched. Verify --nifti_dir exists and --nifti_pattern. Pattern supports {SUB_ID},{FILE_ID},{SITE}. Consider --debug_paths to print attempted paths.")
     X = np.stack(feats, axis=0)
-    key_col = "FILE_ID" if "FILE_ID" in pheno.columns else "SUB_ID"
+    key_col = "FILE_ID" if "FILE_ID" in pheno.columns else ("SUB_ID" if "SUB_ID" in pheno.columns else key_col)
     ph_sub = pheno[pheno[key_col].astype(str).isin(found_ids)].copy()
-    y = ph_sub["DX_GROUP"].values.astype(int)
+    y_col = pick_col(ph_sub, ["DX_GROUP", "DX", "diagnosis", "DX_GROUP_BIN", "Label"])
+    y_raw = ph_sub[y_col].values
+    if np.issubdtype(y_raw.dtype, np.number):
+        y = y_raw.astype(int)
+    else:
+        ya = pd.Series(y_raw).astype(str).str.upper().tolist()
+        y = np.array([1 if v == "ASD" else (2 if v == "TD" else 0) for v in ya], dtype=int)
     td_mask = y == 2
-    covars = ph_sub[["AGE_AT_SCAN", "SEX"]].values.astype(float)
+    age_col = pick_col(ph_sub, ["AGE_AT_SCAN", "AGE", "AgeAtScan"]) 
+    sex_col = pick_col(ph_sub, ["SEX", "sex", "Gender"]) 
+    covars = ph_sub[[age_col, sex_col]].values.astype(float)
     dev = personalized_deviation_maps(X[td_mask], X, covars=covars)
     X_dev = dev["feature_z"]
-    groups = ph_sub["SITE"].values
+    groups = ph_sub[site_col].values if site_col else np.array([""]*ph_sub.shape[0])
     metrics = evaluate_models(X_dev, y, cv_strategy="site_stratified", groups=groups, cv_splits=5)
     with open(os.path.join(out_dir, "bna_results.json"), "w") as f:
         json.dump({"models": metrics}, f)
