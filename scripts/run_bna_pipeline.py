@@ -37,8 +37,7 @@ def main():
     out_dir = args.out_dir or os.path.join(proj, "experiment_results")
     args.out_dir = out_dir
     os.makedirs(out_dir, exist_ok=True)
-    roi_dir = os.path.join(out_dir, "_roi_ts")
-    os.makedirs(roi_dir, exist_ok=True)
+    
     pheno_path = args.phenotype_path
     if not pheno_path:
         raise FileNotFoundError("Phenotype CSV path not provided. Set --phenotype_path or PHENO environment variable to your Drive CSV.")
@@ -87,61 +86,36 @@ def main():
     if use_bna:
         from asd_pipeline.atlas_labels import load_bna_labels
         names, networks = load_bna_labels(labels_path)
-    need_extraction = any(not os.path.exists(os.path.join(roi_dir, f"{sid}.npy")) for sid in ids)
-    if need_extraction:
-        if not use_bna:
-            from nilearn import datasets
-            ho = datasets.fetch_atlas_harvard_oxford("cort-maxprob-thr25-2mm")
-            atlas_path = ho["maps"]
-        for sid in ids:
-            if args.timeseries_dir:
-                exact_npy = os.path.join(args.timeseries_dir, f"{sid}.npy")
-                exact_1d = os.path.join(args.timeseries_dir, f"{sid}.1D")
-                if os.path.exists(exact_npy):
-                    ts = np.load(exact_npy)
-                    np.save(os.path.join(roi_dir, f"{sid}.npy"), ts)
-                    continue
-                if os.path.exists(exact_1d):
-                    arr = np.loadtxt(exact_1d)
-                    ts = arr.T if arr.shape[0] > arr.shape[1] else arr
-                    np.save(os.path.join(roi_dir, f"{sid}.npy"), ts)
-                    continue
-                g1 = glob.glob(os.path.join(args.timeseries_dir, f"{sid}_*.1D"))
-                if g1:
-                    arr = np.loadtxt(g1[0])
-                    ts = arr.T if arr.shape[0] > arr.shape[1] else arr
-                    np.save(os.path.join(roi_dir, f"{sid}.npy"), ts)
-                    continue
-                g2 = glob.glob(os.path.join(args.timeseries_dir, f"{sid}_*.npy"))
-                if g2:
-                    ts = np.load(g2[0])
-                    np.save(os.path.join(roi_dir, f"{sid}.npy"), ts)
-                    continue
-            if args.nifti_dir:
-                candidates = []
-                if args.nifti_pattern:
-                    site = site_by_id.get(sid, "")
-                    candidates.append(os.path.join(args.nifti_dir, args.nifti_pattern.format(SUB_ID=sid, FILE_ID=sid, SITE=site)))
-                candidates.extend([
-                    os.path.join(args.nifti_dir, f"{sid}_func_preproc.nii.gz"),
-                ])
-                nii = next((p for p in candidates if os.path.exists(p)), "")
-                if not nii:
-                    continue
-                ts = extract_roi_timeseries(nii, atlas_path, atlas_type="labels", tr=2.0, high_pass=0.01, low_pass=0.1)
-                ts = regress_confounds(ts, confounds=None, tr=2.0, high_pass=0.01, low_pass=0.1)
-                np.save(os.path.join(roi_dir, f"{sid}.npy"), ts)
-    available_sids = [sid for sid in ids if os.path.exists(os.path.join(roi_dir, f"{sid}.npy"))]
-    if not available_sids:
-        raise FileNotFoundError("No ROI time series found or generated; provide --nifti_dir with <SUB_ID>.nii.gz or --timeseries_dir with <SUB_ID>.npy/.1D")
+    # Build features directly from NIFTI per subject (no ROI .npy files)
+    if not use_bna:
+        from nilearn import datasets
+        ho = datasets.fetch_atlas_harvard_oxford("cort-maxprob-thr25-2mm")
+        atlas_path = ho["maps"]
     feats = []
-    for sid in available_sids:
-        ts = np.load(os.path.join(roi_dir, f"{sid}.npy"))
+    found_ids = []
+    for sid in ids:
+        if not args.nifti_dir:
+            continue
+        candidates = []
+        if args.nifti_pattern:
+            site = site_by_id.get(sid, "") if 'site_by_id' in locals() else ""
+            candidates.append(os.path.join(args.nifti_dir, args.nifti_pattern.format(FILE_ID=sid, SITE=site)))
+        candidates.extend(
+            os.path.join(args.nifti_dir, f"{sid}_func_preproc.nii.gz")
+        )
+        nii = next((p for p in candidates if os.path.exists(p)), "")
+        if not nii:
+            continue
+        ts = extract_roi_timeseries(nii, atlas_path, atlas_type="labels", tr=2.0, high_pass=0.01, low_pass=0.1)
+        ts = regress_confounds(ts, confounds=None, tr=2.0, high_pass=0.01, low_pass=0.1)
         vec, _ = build_connectome_feature_vector(ts, window_size=30, step=15, thr=0.4, networks=networks, compute_partial=False)
         feats.append(vec)
+        found_ids.append(sid)
+    if not feats:
+        raise FileNotFoundError("No NIFTI files matched. Check --nifti_dir and --nifti_pattern (supports {SUB_ID},{FILE_ID},{SITE}).")
     X = np.stack(feats, axis=0)
     key_col = "FILE_ID" if "FILE_ID" in pheno.columns else "SUB_ID"
-    ph_sub = pheno[pheno[key_col].astype(str).isin(available_sids)].copy()
+    ph_sub = pheno[pheno[key_col].astype(str).isin(found_ids)].copy()
     y = ph_sub["DX_GROUP"].values.astype(int)
     td_mask = y == 2
     covars = ph_sub[["AGE_AT_SCAN", "SEX"]].values.astype(float)
