@@ -14,7 +14,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from asd_pipeline.atlas import extract_roi_timeseries
 from asd_pipeline.preprocess import regress_confounds
 from asd_pipeline.connectome import build_connectome_feature_vector
-from asd_pipeline.normative import personalized_deviation_maps
+from asd_pipeline.normative import personalized_deviation_maps, residualize_with_covariates
 from asd_pipeline.model import evaluate_models
 from asd_pipeline.features import dynamic_fc_sequence
 
@@ -40,6 +40,7 @@ def main():
     ap.add_argument("--copy_to_local", action="store_true")
     ap.add_argument("--norm_mode", type=str, default=os.environ.get("NORM_MODE", "mvn"))
     ap.add_argument("--z_dir", type=str, default="")
+    ap.add_argument("--mahal_dir", type=str, default="")
     args = ap.parse_args()
     args.phenotype_path = args.phenotype_path or os.environ.get("PHENO", "")
     args.nifti_dir = args.nifti_dir or os.environ.get("NIFTI_DIR", "")
@@ -55,10 +56,12 @@ def main():
     sequence_dir = args.sequence_dir or os.path.join(out_dir, "_seq_fc")
     index_path = args.index_path or os.path.join(out_dir, "match_index.json")
     z_dir = args.z_dir or os.path.join(out_dir, "_z")
+    mahal_dir = args.mahal_dir or os.path.join(out_dir, "_mahal")
     os.makedirs(roi_dir, exist_ok=True)
     os.makedirs(features_dir, exist_ok=True)
     os.makedirs(sequence_dir, exist_ok=True)
     os.makedirs(z_dir, exist_ok=True)
+    os.makedirs(mahal_dir, exist_ok=True)
     cache_dir = os.path.join(out_dir, "_cache_nii")
     os.makedirs(cache_dir, exist_ok=True)
 
@@ -240,7 +243,7 @@ def main():
 
     stage = (args.pipeline_stage or "all").lower()
     idx = None
-    if stage in ["discover", "timeseries", "features", "sequence", "normative", "models", "all"]:
+    if stage in ["discover", "timeseries", "features", "sequence", "normative", "mahal", "models", "all"]:
         if os.path.exists(index_path):
             try:
                 with open(index_path, "r") as f:
@@ -312,7 +315,7 @@ def main():
             if stage == "sequence":
                 print(json.dumps({"sequence_saved": n_saved}))
                 return
-        if stage in ["normative", "models", "all"]:
+        if stage in ["normative", "mahal", "models", "all"]:
             feats = []
             found_ids = []
             for it in idx:
@@ -338,6 +341,24 @@ def main():
             age_col = pick_col(ph_sub, ["AGE_AT_SCAN", "AGE", "AgeAtScan"]) 
             sex_col = pick_col(ph_sub, ["SEX", "sex", "Gender"]) 
             covars = ph_sub[[age_col, sex_col]].values.astype(float)
+            if stage == "mahal":
+                td_X = X[td_mask]
+                td_cov = covars[: td_X.shape[0]]
+                resid_td, resid_all = residualize_with_covariates(td_X, td_cov, covars)
+                from sklearn.covariance import LedoitWolf
+                lw = LedoitWolf().fit(resid_td)
+                mean_td = resid_td.mean(axis=0)
+                inv = np.linalg.pinv(lw.covariance_)
+                mvals = np.zeros(resid_all.shape[0], dtype=np.float32)
+                for i in range(resid_all.shape[0]):
+                    d = resid_all[i] - mean_td
+                    mvals[i] = float(np.sqrt(np.dot(d, inv @ d)))
+                    np.save(os.path.join(mahal_dir, f"{found_ids[i]}.npy"), np.array([mvals[i]], dtype=np.float32))
+                np.save(os.path.join(out_dir, "mahal.npy"), mvals)
+                with open(os.path.join(out_dir, "ids.json"), "w") as f:
+                    json.dump(found_ids, f)
+                print(json.dumps({"mahal_saved": True, "n_subjects": int(mvals.shape[0])}))
+                return
             if (args.norm_mode or "mvn").lower() == "z_only":
                 td_X = X[td_mask]
                 m = td_X.mean(axis=0)
