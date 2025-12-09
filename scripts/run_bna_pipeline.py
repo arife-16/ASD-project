@@ -38,6 +38,8 @@ def main():
     ap.add_argument("--sequence_dir", type=str, default="")
     ap.add_argument("--index_path", type=str, default="")
     ap.add_argument("--copy_to_local", action="store_true")
+    ap.add_argument("--norm_mode", type=str, default=os.environ.get("NORM_MODE", "mvn"))
+    ap.add_argument("--z_dir", type=str, default="")
     args = ap.parse_args()
     args.phenotype_path = args.phenotype_path or os.environ.get("PHENO", "")
     args.nifti_dir = args.nifti_dir or os.environ.get("NIFTI_DIR", "")
@@ -52,9 +54,11 @@ def main():
     features_dir = args.features_dir or os.path.join(out_dir, "_features")
     sequence_dir = args.sequence_dir or os.path.join(out_dir, "_seq_fc")
     index_path = args.index_path or os.path.join(out_dir, "match_index.json")
+    z_dir = args.z_dir or os.path.join(out_dir, "_z")
     os.makedirs(roi_dir, exist_ok=True)
     os.makedirs(features_dir, exist_ok=True)
     os.makedirs(sequence_dir, exist_ok=True)
+    os.makedirs(z_dir, exist_ok=True)
     cache_dir = os.path.join(out_dir, "_cache_nii")
     os.makedirs(cache_dir, exist_ok=True)
 
@@ -334,18 +338,52 @@ def main():
             age_col = pick_col(ph_sub, ["AGE_AT_SCAN", "AGE", "AgeAtScan"]) 
             sex_col = pick_col(ph_sub, ["SEX", "sex", "Gender"]) 
             covars = ph_sub[[age_col, sex_col]].values.astype(float)
-            dev = personalized_deviation_maps(X[td_mask], X, covars=covars)
-            X_dev = dev["feature_z"]
-            groups = ph_sub[site_col].values if site_col else np.array([""]*ph_sub.shape[0])
-            np.save(os.path.join(out_dir, "X_dev.npy"), X_dev)
-            np.save(os.path.join(out_dir, "y.npy"), y)
-            np.save(os.path.join(out_dir, "groups.npy"), groups)
-            with open(os.path.join(out_dir, "ids.json"), "w") as f:
-                json.dump(found_ids, f)
-            if stage == "normative":
-                print(json.dumps({"normative_saved": True, "n_subjects": int(X_dev.shape[0]), "n_features": int(X_dev.shape[1])}))
-                return
-            metrics = evaluate_models(X_dev, y, cv_strategy="site_stratified", groups=groups, cv_splits=5)
+            if (args.norm_mode or "mvn").lower() == "z_only":
+                td_X = X[td_mask]
+                m = td_X.mean(axis=0)
+                v = td_X.var(axis=0)
+                s = np.sqrt(np.maximum(v, 1e-8))
+                n_subj = X.shape[0]
+                n_feat = X.shape[1]
+                mm_path = os.path.join(out_dir, "X_dev.dat")
+                mm = np.memmap(mm_path, dtype="float32", mode="w+", shape=(n_subj, n_feat))
+                for i in range(n_subj):
+                    z = (X[i] - m) / s
+                    mm[i, :] = z.astype(np.float32)
+                    np.save(os.path.join(z_dir, f"{found_ids[i]}.npy"), z)
+                del mm
+                meta = {"n_subjects": int(n_subj), "n_features": int(n_feat)}
+                with open(os.path.join(out_dir, "X_dev_meta.json"), "w") as f:
+                    json.dump(meta, f)
+                groups = ph_sub[site_col].values if site_col else np.array([""]*ph_sub.shape[0])
+                np.save(os.path.join(out_dir, "y.npy"), y)
+                np.save(os.path.join(out_dir, "groups.npy"), groups)
+                with open(os.path.join(out_dir, "ids.json"), "w") as f:
+                    json.dump(found_ids, f)
+                if stage == "normative":
+                    print(json.dumps({"normative_saved": True, "n_subjects": int(n_subj), "n_features": int(n_feat), "mode": "z_only"}))
+                    return
+                try:
+                    X_dev = np.load(os.path.join(out_dir, "X_dev.npy"))
+                except Exception:
+                    meta = json.load(open(os.path.join(out_dir, "X_dev_meta.json")))
+                    n_subj = int(meta.get("n_subjects", n_subj))
+                    n_feat = int(meta.get("n_features", n_feat))
+                    X_dev = np.memmap(os.path.join(out_dir, "X_dev.dat"), dtype="float32", mode="r", shape=(n_subj, n_feat))
+                metrics = evaluate_models(X_dev, y, cv_strategy="site_stratified", groups=groups, cv_splits=5)
+            else:
+                dev = personalized_deviation_maps(X[td_mask], X, covars=covars)
+                X_dev = dev["feature_z"]
+                groups = ph_sub[site_col].values if site_col else np.array([""]*ph_sub.shape[0])
+                np.save(os.path.join(out_dir, "X_dev.npy"), X_dev)
+                np.save(os.path.join(out_dir, "y.npy"), y)
+                np.save(os.path.join(out_dir, "groups.npy"), groups)
+                with open(os.path.join(out_dir, "ids.json"), "w") as f:
+                    json.dump(found_ids, f)
+                if stage == "normative":
+                    print(json.dumps({"normative_saved": True, "n_subjects": int(X_dev.shape[0]), "n_features": int(X_dev.shape[1]), "mode": "mvn"}))
+                    return
+                metrics = evaluate_models(X_dev, y, cv_strategy="site_stratified", groups=groups, cv_splits=5)
             with open(os.path.join(out_dir, "bna_results.json"), "w") as f:
                 json.dump({"models": metrics}, f)
             print(json.dumps({"models": metrics}))
