@@ -80,8 +80,16 @@ class NormDiffSelector(BaseEstimator, TransformerMixin):
         self.idx_ = None
 
     def fit(self, X: np.ndarray, y: np.ndarray):
-        m0 = X[y == 0].mean(axis=0)
-        m1 = X[y == 1].mean(axis=0)
+        y_arr = np.asarray(y)
+        classes = np.unique(y_arr)
+        if 2 in classes and 1 in classes:
+            c0, c1 = 2, 1
+        elif 0 in classes and 1 in classes:
+            c0, c1 = 0, 1
+        else:
+            c0, c1 = classes[0], classes[-1]
+        m0 = X[y_arr == c0].mean(axis=0) if np.any(y_arr == c0) else X.mean(axis=0)
+        m1 = X[y_arr == c1].mean(axis=0) if np.any(y_arr == c1) else X.mean(axis=0)
         diff = np.abs(m1 - m0)
         self.idx_ = np.argsort(diff)[::-1][: self.k]
         return self
