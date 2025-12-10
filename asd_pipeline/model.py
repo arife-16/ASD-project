@@ -10,7 +10,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.model_selection import StratifiedKFold, GroupKFold, LeaveOneGroupOut, cross_validate
+from sklearn.model_selection import StratifiedKFold, GroupKFold, LeaveOneGroupOut, cross_validate, GridSearchCV
 from sklearn.metrics import make_scorer
 from sklearn.base import BaseEstimator, TransformerMixin
 
@@ -77,6 +77,45 @@ def evaluate_models(X: np.ndarray, y: np.ndarray, cv_strategy: str = "stratified
     scoring = {"roc_auc": "roc_auc", "f1": "f1", "accuracy": "accuracy"}
     out: Dict[str, Dict[str, float]] = {}
     for name, model in zip(names, models):
+        res = cross_validate(model, X, y, cv=cv, scoring=scoring, n_jobs=None, groups=groups)
+        out[name] = {k.replace("test_", ""): float(np.mean(v)) for k, v in res.items() if k.startswith("test_")}
+    return out
+
+
+def evaluate_models_tuned(X: np.ndarray, y: np.ndarray, cv_strategy: str = "stratified", groups: np.ndarray = None, cv_splits: int = 5, random_state: int = 42) -> Dict[str, Dict[str, float]]:
+    if cv_strategy == "loso" and groups is not None:
+        cv = LeaveOneGroupOut()
+    elif cv_strategy == "group" and groups is not None:
+        cv = GroupKFold(n_splits=cv_splits)
+    elif cv_strategy == "site_stratified" and groups is not None:
+        cv = site_stratified_kfold(groups, y, n_splits=cv_splits, random_state=random_state)
+    else:
+        cv = StratifiedKFold(n_splits=cv_splits, shuffle=True, random_state=random_state)
+    models = build_models()
+    names = ["logistic_l2", "logistic_elasticnet", "linear_svc_calibrated", "svm_rbf", "random_forest", "svm_rbf_pca", "gradient_boosting"]
+    grids = {
+        "logistic_l2": {"selector__k": [300, 500, 1000], "clf__C": [0.1, 1.0, 10.0]},
+        "logistic_elasticnet": {"selector__k": [300, 500, 1000], "clf__C": [0.1, 1.0, 10.0], "clf__l1_ratio": [0.2, 0.5, 0.8]},
+        "linear_svc_calibrated": {"estimator__svc__svc__C": [0.1, 1.0, 10.0]},
+        "svm_rbf": {"selector__k": [500, 1000, 2000], "svc__C": [0.1, 1.0, 10.0], "svc__gamma": ["scale", 0.01, 0.001]},
+        "random_forest": {"selector__k": [500, 1000], "rf__n_estimators": [200, 500, 800], "rf__max_depth": [None, 10, 20], "rf__min_samples_leaf": [1, 2, 5]},
+        "svm_rbf_pca": {"selector__k": [1000, 1500], "pca__n_components": [0.90, 0.95, 0.99], "svc__C": [0.1, 1.0, 10.0], "svc__gamma": ["scale", 0.01]},
+        "gradient_boosting": {"gb__n_estimators": [200, 300, 500], "gb__learning_rate": [0.03, 0.05, 0.1], "gb__max_depth": [2, 3, 4]},
+    }
+    scoring = {"roc_auc": "roc_auc", "f1": "f1", "accuracy": "accuracy"}
+    out: Dict[str, Dict[str, float]] = {}
+    for name, model in zip(names, models):
+        grid = grids.get(name, None)
+        if grid:
+            gcv = GridSearchCV(model, param_grid=grid, cv=cv, scoring="roc_auc", n_jobs=None, refit=False)
+            if groups is not None:
+                gcv.fit(X, y, groups=groups)
+            else:
+                gcv.fit(X, y)
+            scores = gcv.cv_results_["mean_test_score"]
+            best_idx = int(np.argmax(scores))
+            best_params = gcv.cv_results_["params"][best_idx]
+            model.set_params(**best_params)
         res = cross_validate(model, X, y, cv=cv, scoring=scoring, n_jobs=None, groups=groups)
         out[name] = {k.replace("test_", ""): float(np.mean(v)) for k, v in res.items() if k.startswith("test_")}
     return out
