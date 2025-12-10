@@ -41,6 +41,8 @@ def main():
     ap.add_argument("--norm_mode", type=str, default=os.environ.get("NORM_MODE", "mvn"))
     ap.add_argument("--z_dir", type=str, default="")
     ap.add_argument("--mahal_dir", type=str, default="")
+    ap.add_argument("--mahal_k", type=int, default=int(os.environ.get("MAHAL_K", "2000")))
+    ap.add_argument("--mahal_selection", type=str, default=os.environ.get("MAHAL_SEL", "variance"))
     args = ap.parse_args()
     args.phenotype_path = args.phenotype_path or os.environ.get("PHENO", "")
     args.nifti_dir = args.nifti_dir or os.environ.get("NIFTI_DIR", "")
@@ -342,22 +344,36 @@ def main():
             sex_col = pick_col(ph_sub, ["SEX", "sex", "Gender"]) 
             covars = ph_sub[[age_col, sex_col]].values.astype(float)
             if stage == "mahal":
-                td_X = X[td_mask]
-                td_cov = covars[: td_X.shape[0]]
-                resid_td, resid_all = residualize_with_covariates(td_X, td_cov, covars)
+                td_X = X[td_mask].astype(np.float32)
+                td_cov = covars[: td_X.shape[0]].astype(np.float32)
+                resid_td, resid_all = residualize_with_covariates(td_X, td_cov, covars.astype(np.float32))
+                sel = (args.mahal_selection or "variance").lower()
+                k = int(args.mahal_k) if args.mahal_k and args.mahal_k > 0 else resid_td.shape[1]
+                if k < resid_td.shape[1]:
+                    if sel == "variance":
+                        scores = resid_td.var(axis=0)
+                    else:
+                        # fallback to variance if selector not recognized
+                        scores = resid_td.var(axis=0)
+                    idx = np.argsort(scores)[::-1][:k]
+                    resid_td_k = resid_td[:, idx].astype(np.float64)
+                    resid_all_k = resid_all[:, idx].astype(np.float64)
+                else:
+                    resid_td_k = resid_td.astype(np.float64)
+                    resid_all_k = resid_all.astype(np.float64)
                 from sklearn.covariance import LedoitWolf
-                lw = LedoitWolf().fit(resid_td)
-                mean_td = resid_td.mean(axis=0)
+                lw = LedoitWolf().fit(resid_td_k)
+                mean_td = resid_td_k.mean(axis=0)
                 inv = np.linalg.pinv(lw.covariance_)
-                mvals = np.zeros(resid_all.shape[0], dtype=np.float32)
-                for i in range(resid_all.shape[0]):
-                    d = resid_all[i] - mean_td
+                mvals = np.zeros(resid_all_k.shape[0], dtype=np.float32)
+                for i in range(resid_all_k.shape[0]):
+                    d = resid_all_k[i] - mean_td
                     mvals[i] = float(np.sqrt(np.dot(d, inv @ d)))
                     np.save(os.path.join(mahal_dir, f"{found_ids[i]}.npy"), np.array([mvals[i]], dtype=np.float32))
                 np.save(os.path.join(out_dir, "mahal.npy"), mvals)
                 with open(os.path.join(out_dir, "ids.json"), "w") as f:
                     json.dump(found_ids, f)
-                print(json.dumps({"mahal_saved": True, "n_subjects": int(mvals.shape[0])}))
+                print(json.dumps({"mahal_saved": True, "n_subjects": int(mvals.shape[0]), "k": int(k)}))
                 return
             if (args.norm_mode or "mvn").lower() == "z_only":
                 td_X = X[td_mask]
