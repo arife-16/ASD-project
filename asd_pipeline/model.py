@@ -4,7 +4,8 @@ import pandas as pd
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
-from sklearn.svm import LinearSVC
+from sklearn.svm import LinearSVC, SVC
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import StratifiedKFold, GroupKFold, LeaveOneGroupOut, cross_validate
 from sklearn.metrics import make_scorer
@@ -32,6 +33,8 @@ def build_models() -> List[Pipeline]:
     models.append(Pipeline([("scaler", StandardScaler()), ("selector", NormDiffSelector(k=500)), ("clf", LogisticRegression(C=1.0, penalty="elasticnet", solver="saga", l1_ratio=0.5, max_iter=2000, class_weight="balanced"))]))
     svc = Pipeline([("scaler", StandardScaler()), ("svc", LinearSVC(C=1.0, class_weight="balanced"))])
     models.append(CalibratedClassifierCV(estimator=svc, cv=3, method="sigmoid"))
+    models.append(Pipeline([("scaler", StandardScaler()), ("selector", NormDiffSelector(k=500)), ("svc", SVC(C=1.0, kernel="rbf", gamma="scale", class_weight="balanced", probability=True, random_state=42))]))
+    models.append(Pipeline([("selector", NormDiffSelector(k=1000)), ("rf", RandomForestClassifier(n_estimators=500, class_weight="balanced", n_jobs=-1, random_state=42))]))
     return models
 
 
@@ -65,7 +68,7 @@ def evaluate_models(X: np.ndarray, y: np.ndarray, cv_strategy: str = "stratified
     else:
         cv = StratifiedKFold(n_splits=cv_splits, shuffle=True, random_state=random_state)
     models = build_models()
-    names = ["logistic_l2", "logistic_elasticnet", "linear_svc_calibrated"]
+    names = ["logistic_l2", "logistic_elasticnet", "linear_svc_calibrated", "svm_rbf", "random_forest"]
     scoring = {"roc_auc": "roc_auc", "f1": "f1", "accuracy": "accuracy"}
     out: Dict[str, Dict[str, float]] = {}
     for name, model in zip(names, models):

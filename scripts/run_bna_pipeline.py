@@ -44,6 +44,7 @@ def main():
     ap.add_argument("--mahal_k", type=int, default=int(os.environ.get("MAHAL_K", "2000")))
     ap.add_argument("--mahal_selection", type=str, default=os.environ.get("MAHAL_SEL", "variance"))
     ap.add_argument("--cv_splits", type=int, default=int(os.environ.get("CV_SPLITS", "5")))
+    ap.add_argument("--feature_mode", type=str, default=os.environ.get("FEATURE_MODE", "norm"))
     args = ap.parse_args()
     args.phenotype_path = args.phenotype_path or os.environ.get("PHENO", "")
     args.nifti_dir = args.nifti_dir or os.environ.get("NIFTI_DIR", "")
@@ -359,6 +360,19 @@ def main():
                             X_use = np.memmap(os.path.join(out_dir, "X_dev.dat"), dtype="float32", mode="r", shape=(n_subj, n_feat))
                         except Exception:
                             raise FileNotFoundError("No normative features found. Run stage 'normative' first or provide X_dev.*")
+                X_raw = X
+                ids_order = None
+                ids_path = os.path.join(out_dir, "ids.json")
+                if os.path.exists(ids_path):
+                    try:
+                        ids_order = json.load(open(ids_path))
+                    except Exception:
+                        ids_order = None
+                if ids_order and len(ids_order) == len(found_ids):
+                    pos = {sid: i for i, sid in enumerate(found_ids)}
+                    idx_order = [pos.get(s, None) for s in ids_order]
+                    if all(i is not None for i in idx_order):
+                        X_raw = X_raw[np.array(idx_order)]
                 try:
                     y = np.load(os.path.join(out_dir, "y.npy"))
                 except Exception:
@@ -367,7 +381,17 @@ def main():
                     groups = np.load(os.path.join(out_dir, "groups.npy"))
                 except Exception:
                     groups = ph_sub[site_col].values if site_col else np.array([""]*ph_sub.shape[0])
-                metrics = evaluate_models(X_use, y, cv_strategy="site_stratified", groups=groups, cv_splits=int(args.cv_splits))
+                fm = (args.feature_mode or "norm").lower()
+                if fm == "raw":
+                    X_eval = X_raw
+                elif fm == "raw_plus_norm":
+                    try:
+                        X_eval = np.concatenate([np.asarray(X_use), np.asarray(X_raw)], axis=1)
+                    except Exception:
+                        X_eval = np.asarray(X_use)
+                else:
+                    X_eval = np.asarray(X_use)
+                metrics = evaluate_models(X_eval, y, cv_strategy="site_stratified", groups=groups, cv_splits=int(args.cv_splits))
                 with open(os.path.join(out_dir, "bna_results.json"), "w") as f:
                     json.dump({"models": metrics}, f)
                 print(json.dumps({"models": metrics}))
