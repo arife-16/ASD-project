@@ -2,10 +2,13 @@ from typing import Dict, Tuple, List
 import numpy as np
 import pandas as pd
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import LinearSVC, SVC
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.neural_network import MLPClassifier
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import StratifiedKFold, GroupKFold, LeaveOneGroupOut, cross_validate
 from sklearn.metrics import make_scorer
@@ -35,6 +38,8 @@ def build_models() -> List[Pipeline]:
     models.append(CalibratedClassifierCV(estimator=svc, cv=3, method="sigmoid"))
     models.append(Pipeline([("scaler", StandardScaler()), ("selector", NormDiffSelector(k=500)), ("svc", SVC(C=1.0, kernel="rbf", gamma="scale", class_weight="balanced", probability=True, random_state=42))]))
     models.append(Pipeline([("selector", NormDiffSelector(k=1000)), ("rf", RandomForestClassifier(n_estimators=500, class_weight="balanced", n_jobs=-1, random_state=42))]))
+    models.append(Pipeline([("scaler", StandardScaler()), ("selector", NormDiffSelector(k=1500)), ("pca", PCA(n_components=0.95, whiten=True, random_state=42)), ("svc", SVC(C=1.0, kernel="rbf", gamma="scale", class_weight="balanced", probability=True, random_state=42))]))
+    models.append(Pipeline([("selector", NormDiffSelector(k=1000)), ("gb", GradientBoostingClassifier(n_estimators=300, learning_rate=0.05, max_depth=3, random_state=42))]))
     return models
 
 
@@ -68,7 +73,7 @@ def evaluate_models(X: np.ndarray, y: np.ndarray, cv_strategy: str = "stratified
     else:
         cv = StratifiedKFold(n_splits=cv_splits, shuffle=True, random_state=random_state)
     models = build_models()
-    names = ["logistic_l2", "logistic_elasticnet", "linear_svc_calibrated", "svm_rbf", "random_forest"]
+    names = ["logistic_l2", "logistic_elasticnet", "linear_svc_calibrated", "svm_rbf", "random_forest", "svm_rbf_pca", "gradient_boosting"]
     scoring = {"roc_auc": "roc_auc", "f1": "f1", "accuracy": "accuracy"}
     out: Dict[str, Dict[str, float]] = {}
     for name, model in zip(names, models):
