@@ -43,6 +43,7 @@ def main():
     ap.add_argument("--mahal_dir", type=str, default="")
     ap.add_argument("--mahal_k", type=int, default=int(os.environ.get("MAHAL_K", "2000")))
     ap.add_argument("--mahal_selection", type=str, default=os.environ.get("MAHAL_SEL", "variance"))
+    ap.add_argument("--cv_splits", type=int, default=int(os.environ.get("CV_SPLITS", "5")))
     args = ap.parse_args()
     args.phenotype_path = args.phenotype_path or os.environ.get("PHENO", "")
     args.nifti_dir = args.nifti_dir or os.environ.get("NIFTI_DIR", "")
@@ -343,6 +344,34 @@ def main():
             age_col = pick_col(ph_sub, ["AGE_AT_SCAN", "AGE", "AgeAtScan"]) 
             sex_col = pick_col(ph_sub, ["SEX", "sex", "Gender"]) 
             covars = ph_sub[[age_col, sex_col]].values.astype(float)
+            if stage == "models":
+                X_use = None
+                try:
+                    X_use = np.load(os.path.join(out_dir, "X_normative.npy"))
+                except Exception:
+                    try:
+                        X_use = np.load(os.path.join(out_dir, "X_dev.npy"))
+                    except Exception:
+                        try:
+                            meta = json.load(open(os.path.join(out_dir, "X_dev_meta.json")))
+                            n_subj = int(meta.get("n_subjects", X.shape[0]))
+                            n_feat = int(meta.get("n_features", X.shape[1]))
+                            X_use = np.memmap(os.path.join(out_dir, "X_dev.dat"), dtype="float32", mode="r", shape=(n_subj, n_feat))
+                        except Exception:
+                            raise FileNotFoundError("No normative features found. Run stage 'normative' first or provide X_dev.*")
+                try:
+                    y = np.load(os.path.join(out_dir, "y.npy"))
+                except Exception:
+                    pass
+                try:
+                    groups = np.load(os.path.join(out_dir, "groups.npy"))
+                except Exception:
+                    groups = ph_sub[site_col].values if site_col else np.array([""]*ph_sub.shape[0])
+                metrics = evaluate_models(X_use, y, cv_strategy="site_stratified", groups=groups, cv_splits=int(args.cv_splits))
+                with open(os.path.join(out_dir, "bna_results.json"), "w") as f:
+                    json.dump({"models": metrics}, f)
+                print(json.dumps({"models": metrics}))
+                return
             if stage == "mahal":
                 td_X = X[td_mask].astype(np.float32)
                 td_cov = covars[: td_X.shape[0]].astype(np.float32)
@@ -353,11 +382,10 @@ def main():
                     if sel == "variance":
                         scores = resid_td.var(axis=0)
                     else:
-                        # fallback to variance if selector not recognized
                         scores = resid_td.var(axis=0)
-                    idx = np.argsort(scores)[::-1][:k]
-                    resid_td_k = resid_td[:, idx].astype(np.float64)
-                    resid_all_k = resid_all[:, idx].astype(np.float64)
+                    sel_idx = np.argsort(scores)[::-1][:k]
+                    resid_td_k = resid_td[:, sel_idx].astype(np.float64)
+                    resid_all_k = resid_all[:, sel_idx].astype(np.float64)
                 else:
                     resid_td_k = resid_td.astype(np.float64)
                     resid_all_k = resid_all.astype(np.float64)
