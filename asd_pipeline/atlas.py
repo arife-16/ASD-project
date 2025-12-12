@@ -15,6 +15,7 @@ def extract_roi_timeseries(nifti_path: str, atlas_path: str, atlas_type: str = "
             t_r=tr,
             high_pass=high_pass,
             low_pass=low_pass,
+            resampling_target="labels",
         )
     else:
         masker = NiftiMapsMasker(
@@ -24,6 +25,7 @@ def extract_roi_timeseries(nifti_path: str, atlas_path: str, atlas_type: str = "
             t_r=tr,
             high_pass=high_pass,
             low_pass=low_pass,
+            resampling_target="maps",
         )
     ts = masker.fit_transform(img)
     return ts.T
