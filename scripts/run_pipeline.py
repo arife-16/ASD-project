@@ -469,6 +469,45 @@ def main():
     covars = pheno[[args.site_col, args.age_col, args.sex_col]].copy()
     continuous = [args.age_col]
     categorical = [args.sex_col]
+    if args.combine_only and args.components_out_dir and args.features_out_dir:
+        os.makedirs(args.features_out_dir, exist_ok=True)
+        comps = [c.strip() for c in (args.components.split(",") if args.components else []) if c.strip()]
+        order = comps if comps else ["fc_mean","fc_std","pc_mean","pc_std","strength_mean","strength_std","cluster_mean","cluster_std","alff","state_occ","transitions","dwell_mean","dwell_std","entropy","asymmetry"]
+        feats = []
+        n_done = 0
+        for sid in subject_ids:
+            parts = []
+            ok = True
+            for name in order:
+                p = os.path.join(args.components_out_dir, name, f"{sid}.npy")
+                if not os.path.exists(p):
+                    ok = False
+                    break
+                parts.append(np.load(p))
+            if not ok:
+                continue
+            vec = np.concatenate(parts, axis=0)
+            np.save(os.path.join(args.features_out_dir, f"{sid}.npy"), vec)
+            feats.append(vec)
+            n_done += 1
+            if n_done % 100 == 0:
+                print(json.dumps({"combine_progress": n_done}))
+        if len(feats) > 0:
+            X = np.stack(feats, axis=0)
+            np.save(os.path.join(args.features_out_dir, "_stack.npy"), X)
+            with open(os.path.join(args.features_out_dir, "_index.txt"), "w") as f:
+                for sid in subject_ids:
+                    p = os.path.join(args.features_out_dir, f"{sid}.npy")
+                    if os.path.exists(p):
+                        f.write(f"{sid}\n")
+        else:
+            X = np.empty((0,))
+        if args.skip_models:
+            out = {"combine_done": n_done, "saved_features": True, "n_subjects": len(subject_ids)}
+            with open(args.output, "w") as f:
+                json.dump(out, f)
+            print(json.dumps(out))
+            return
     X_h, _ = combat_harmonize(X, covars[[args.site_col, args.age_col, args.sex_col]], site_col=args.site_col, continuous_covars=continuous, categorical_covars=categorical)
     y = pheno[args.label_col].values.astype(int)
     td_mask = y == 2
