@@ -475,12 +475,14 @@ def main():
         order = comps if comps else ["fc_mean","fc_std","pc_mean","pc_std","strength_mean","strength_std","cluster_mean","cluster_std","alff","state_occ","transitions","dwell_mean","dwell_std","entropy","asymmetry"]
         feats = []
         n_done = 0
+        print(json.dumps({"combine_start": {"n_subjects": len(subject_ids), "components_out_dir": args.components_out_dir, "features_out_dir": args.features_out_dir, "components": order}}), flush=True)
         for sid in subject_ids:
             parts = []
             ok = True
             for name in order:
                 p = os.path.join(args.components_out_dir, name, f"{sid}.npy")
                 if not os.path.exists(p):
+                    print(json.dumps({"missing_component": {"sid": sid, "component": name, "path": p}}), flush=True)
                     ok = False
                     break
                 parts.append(np.load(p))
@@ -490,8 +492,8 @@ def main():
             np.save(os.path.join(args.features_out_dir, f"{sid}.npy"), vec)
             feats.append(vec)
             n_done += 1
-            if n_done % 100 == 0:
-                print(json.dumps({"combine_progress": n_done}))
+            if n_done % 10 == 0:
+                print(json.dumps({"combine_progress": n_done}), flush=True)
         if len(feats) > 0:
             X = np.stack(feats, axis=0)
             np.save(os.path.join(args.features_out_dir, "_stack.npy"), X)
@@ -502,11 +504,12 @@ def main():
                         f.write(f"{sid}\n")
         else:
             X = np.empty((0,))
+        print(json.dumps({"combine_done": n_done}), flush=True)
         if args.skip_models:
             out = {"combine_done": n_done, "saved_features": True, "n_subjects": len(subject_ids)}
             with open(args.output, "w") as f:
                 json.dump(out, f)
-            print(json.dumps(out))
+            print(json.dumps(out), flush=True)
             return
     X_h, _ = combat_harmonize(X, covars[[args.site_col, args.age_col, args.sex_col]], site_col=args.site_col, continuous_covars=continuous, categorical_covars=categorical)
     y = pheno[args.label_col].values.astype(int)
