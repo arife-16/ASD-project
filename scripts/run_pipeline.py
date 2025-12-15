@@ -74,6 +74,7 @@ def main():
     parser.add_argument("--components_out_dir", type=str, default="")
     parser.add_argument("--combine_only", action="store_true")
     parser.add_argument("--adj_thr", type=float, default=0.3)
+    parser.add_argument("--external_norm_params", type=str, default="")
     args = parser.parse_args()
 
     pheno = pd.read_csv(args.phenotype)
@@ -560,8 +561,26 @@ def main():
     y = pheno[args.label_col].values.astype(int)
     td_mask = y == 2
     covars_arr = covars[[args.age_col, args.sex_col]].values.astype(float)
-    dev = personalized_deviation_maps(X_h[td_mask], X_h, covars=covars_arr)
-    X_dev = dev["feature_z"]
+    if args.external_norm_params and os.path.exists(args.external_norm_params):
+        params = None
+        if args.external_norm_params.lower().endswith(".npz"):
+            d = np.load(args.external_norm_params)
+            params = {k: d[k] for k in d.files}
+        else:
+            with open(args.external_norm_params, "r") as f:
+                import json as _json
+                jd = _json.load(f)
+                params = {k: np.asarray(v) for k, v in jd.items()}
+        mean = params.get("mean", None)
+        std = params.get("std", None)
+        if mean is None or std is None:
+            X_dev = personalized_deviation_maps(X_h[td_mask], X_h, covars=covars_arr)["feature_z"]
+        else:
+            s = np.where(std < 1e-8, 1e-8, std)
+            X_dev = (X_h - mean) / s
+    else:
+        dev = personalized_deviation_maps(X_h[td_mask], X_h, covars=covars_arr)
+        X_dev = dev["feature_z"]
     if args.norm_features_out_dir:
         os.makedirs(args.norm_features_out_dir, exist_ok=True)
         for sid, row in zip(subject_ids, X_dev):
