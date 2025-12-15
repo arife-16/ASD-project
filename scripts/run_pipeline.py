@@ -69,7 +69,7 @@ def main():
     args = parser.parse_args()
 
     pheno = pd.read_csv(args.phenotype)
-    subject_ids = pheno["SUB_ID"].astype(str).tolist()
+    subject_ids = pheno["FILE_ID"].astype(str).tolist()
     if args.nifti_dir and args.atlas:
         ts_dir_tmp = os.path.join(args.nifti_dir, "_roi_ts")
         os.makedirs(ts_dir_tmp, exist_ok=True)
