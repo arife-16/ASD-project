@@ -21,3 +21,17 @@ def load_bna_labels(xlsx_path: str) -> Tuple[List[str], Optional[List[str]]]:
     names = df[name_col].astype(str).tolist()
     networks = df[net_col].astype(str).tolist() if net_col else None
     return names, networks
+
+
+def load_cc_labels(tsv_path: str) -> Tuple[List[str], Optional[List[str]]]:
+    if not tsv_path or not os.path.exists(tsv_path):
+        return [], None
+    df = pd.read_csv(tsv_path, sep="\t")
+    if "label" in df.columns:
+        labels = df["label"].astype(str).tolist()
+    else:
+        col = df.columns[1]
+        labels = df[col].astype(str).tolist()
+    if len(labels) > 0 and labels[0].lower() == "background":
+        labels = labels[1:]
+    return labels, None

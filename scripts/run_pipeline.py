@@ -8,12 +8,14 @@ import numpy as np
 import pandas as pd
 
 from asd_pipeline.preprocess import regress_confounds
-from asd_pipeline.features import build_feature_vector, build_feature_vector_with_states
+from asd_pipeline.features import build_feature_vector, build_feature_vector_with_states, dynamic_state_features, alff
 from asd_pipeline.harmonize import combat_harmonize
 from asd_pipeline.normative import personalized_deviation_maps
 from asd_pipeline.model import evaluate_classifier, evaluate_models
 from asd_pipeline.atlas import extract_roi_timeseries
 from asd_pipeline.confounds import build_confounds
+from asd_pipeline.connectome import build_connectome_feature_vector
+from asd_pipeline.atlas_labels import load_cc_labels
 
 
 def load_timeseries(subject_ids: List[str], ts_dir: str) -> List[np.ndarray]:
@@ -47,6 +49,7 @@ def main():
     parser.add_argument("--nifti_dir", type=str, default="")
     parser.add_argument("--atlas", type=str, default="")
     parser.add_argument("--atlas_type", type=str, default="labels")
+    parser.add_argument("--labels_tsv", type=str, default="")
     parser.add_argument("--confounds_dir", type=str, default="")
     parser.add_argument("--confounds_tsv_dir", type=str, default="")
     parser.add_argument("--wm_mask", type=str, default="")
@@ -84,17 +87,58 @@ def main():
             np.save(os.path.join(ts_dir_tmp, f"{sid}.npy"), ts)
         def build(sids, dirpath):
             feats = []
+            networks = None
+            if args.labels_tsv:
+                _, networks = load_cc_labels(args.labels_tsv)
             for sid in sids:
                 ts = np.load(os.path.join(dirpath, f"{sid}.npy"))
-                if args.n_states and args.n_states > 0:
-                    vec, _ = build_feature_vector_with_states(ts, tr=args.tr, window_size=args.window_size, step=args.step, n_states=args.n_states)
+                use_connectome = bool(args.labels_tsv) or ("CC400" in os.path.basename(args.atlas))
+                if use_connectome:
+                    v_conn, _ = build_connectome_feature_vector(ts, window_size=args.window_size, step=args.step, thr=0.3, networks=networks, compute_partial=True)
+                    v_alff = alff(ts, args.tr)
+                    parts = [v_conn, v_alff]
+                    if args.n_states and args.n_states > 0:
+                        state = dynamic_state_features(ts, args.window_size, args.step, n_states=args.n_states)
+                        parts.extend([state["state_occ"], state["transitions"], state["dwell_mean"], state["dwell_std"], state["entropy"], state["asymmetry"]])
+                    vec = np.concatenate(parts, axis=0)
+                    feats.append(vec)
                 else:
-                    vec, _ = build_feature_vector(ts, tr=args.tr, window_size=args.window_size, step=args.step)
-                feats.append(vec)
+                    if args.n_states and args.n_states > 0:
+                        vec, _ = build_feature_vector_with_states(ts, tr=args.tr, window_size=args.window_size, step=args.step, n_states=args.n_states)
+                    else:
+                        vec, _ = build_feature_vector(ts, tr=args.tr, window_size=args.window_size, step=args.step)
+                    feats.append(vec)
             return np.stack(feats, axis=0)
         X = build(subject_ids, ts_dir_tmp)
     else:
-        X = build_features(subject_ids, args.ts_dir, tr=args.tr, window_size=args.window_size, step=args.step, confounds_dir=args.confounds_dir)
+        feats = []
+        networks = None
+        if args.labels_tsv:
+            _, networks = load_cc_labels(args.labels_tsv)
+        for sid in subject_ids:
+            ts = np.load(os.path.join(args.ts_dir, f"{sid}.npy"))
+            confounds = None
+            if args.confounds_dir:
+                cpath = os.path.join(args.confounds_dir, f"{sid}.npy")
+                if os.path.exists(cpath):
+                    confounds = np.load(cpath)
+            ts_clean = regress_confounds(ts, confounds=confounds, tr=args.tr, high_pass=0.01, low_pass=0.1)
+            use_connectome = bool(args.labels_tsv)
+            if use_connectome:
+                v_conn, _ = build_connectome_feature_vector(ts_clean, window_size=args.window_size, step=args.step, thr=0.3, networks=networks, compute_partial=True)
+                v_alff = alff(ts_clean, args.tr)
+                parts = [v_conn, v_alff]
+                if args.n_states and args.n_states > 0:
+                    state = dynamic_state_features(ts_clean, args.window_size, args.step, n_states=args.n_states)
+                    parts.extend([state["state_occ"], state["transitions"], state["dwell_mean"], state["dwell_std"], state["entropy"], state["asymmetry"]])
+                vec = np.concatenate(parts, axis=0)
+            else:
+                if args.n_states and args.n_states > 0:
+                    vec, _ = build_feature_vector_with_states(ts_clean, tr=args.tr, window_size=args.window_size, step=args.step, n_states=args.n_states)
+                else:
+                    vec, _ = build_feature_vector(ts_clean, tr=args.tr, window_size=args.window_size, step=args.step)
+            feats.append(vec)
+        X = np.stack(feats, axis=0)
     covars = pheno[[args.site_col, args.age_col, args.sex_col]].copy()
     continuous = [args.age_col]
     categorical = [args.sex_col]
