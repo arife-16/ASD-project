@@ -82,6 +82,48 @@ def main():
     pheno = pheno.loc[valid_mask].reset_index(drop=True)
     subject_ids = pheno["FILE_ID"].astype(str).tolist()
     sites_for_id = {str(row["FILE_ID"]): str(row[args.site_col]) if args.site_col in pheno.columns else "" for _, row in pheno.iterrows()}
+    if args.combine_only and args.components_out_dir and args.features_out_dir:
+        os.makedirs(args.features_out_dir, exist_ok=True)
+        comps = [c.strip() for c in (args.components.split(",") if args.components else []) if c.strip()]
+        order = comps if comps else ["fc_mean","fc_std","pc_mean","pc_std","strength_mean","strength_std","cluster_mean","cluster_std","alff","state_occ","transitions","dwell_mean","dwell_std","entropy","asymmetry"]
+        feats = []
+        n_done = 0
+        print(json.dumps({"combine_start": {"n_subjects": len(subject_ids), "components_out_dir": args.components_out_dir, "features_out_dir": args.features_out_dir, "components": order}}), flush=True)
+        for sid in subject_ids:
+            parts = []
+            ok = True
+            for name in order:
+                p = os.path.join(args.components_out_dir, name, f"{sid}.npy")
+                if not os.path.exists(p):
+                    print(json.dumps({"missing_component": {"sid": sid, "component": name, "path": p}}), flush=True)
+                    ok = False
+                    break
+                parts.append(np.load(p))
+            if not ok:
+                continue
+            vec = np.concatenate(parts, axis=0)
+            np.save(os.path.join(args.features_out_dir, f"{sid}.npy"), vec)
+            feats.append(vec)
+            n_done += 1
+            if n_done % 10 == 0:
+                print(json.dumps({"combine_progress": n_done}), flush=True)
+        if len(feats) > 0:
+            X = np.stack(feats, axis=0)
+            np.save(os.path.join(args.features_out_dir, "_stack.npy"), X)
+            with open(os.path.join(args.features_out_dir, "_index.txt"), "w") as f:
+                for sid in subject_ids:
+                    p = os.path.join(args.features_out_dir, f"{sid}.npy")
+                    if os.path.exists(p):
+                        f.write(f"{sid}\n")
+        else:
+            X = np.empty((0,))
+        print(json.dumps({"combine_done": n_done}), flush=True)
+        if args.skip_models:
+            out = {"combine_done": n_done, "saved_features": True, "n_subjects": len(subject_ids)}
+            with open(args.output, "w") as f:
+                json.dump(out, f)
+            print(json.dumps(out), flush=True)
+            return
     if args.nifti_dir and args.atlas:
         ts_dir_tmp = os.path.join(args.nifti_dir, "_roi_ts")
         os.makedirs(ts_dir_tmp, exist_ok=True)
@@ -434,7 +476,10 @@ def main():
                 else:
                     vec, _ = build_feature_vector(ts_clean, tr=args.tr, window_size=args.window_size, step=args.step)
             feats.append(vec)
-        X = np.stack(feats, axis=0)
+        if len(feats) > 0:
+            X = np.stack(feats, axis=0)
+        else:
+            X = np.empty((0,))
     if args.combine_only and args.components_out_dir and args.features_out_dir:
         os.makedirs(args.features_out_dir, exist_ok=True)
         comps = [c.strip() for c in (args.components.split(",") if args.components else []) if c.strip()]
