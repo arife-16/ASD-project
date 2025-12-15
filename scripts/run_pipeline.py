@@ -6,6 +6,7 @@ import json
 from typing import List, Tuple
 import numpy as np
 import pandas as pd
+import glob
 
 from asd_pipeline.preprocess import regress_confounds
 from asd_pipeline.features import build_feature_vector, build_feature_vector_with_states, dynamic_state_features, alff
@@ -69,7 +70,11 @@ def main():
     args = parser.parse_args()
 
     pheno = pd.read_csv(args.phenotype)
+    ids = pheno["FILE_ID"].astype(str)
+    valid_mask = (~ids.isna()) & (ids.str.len() > 0) & (~ids.str.lower().str.contains("no_filename"))
+    pheno = pheno.loc[valid_mask].reset_index(drop=True)
     subject_ids = pheno["FILE_ID"].astype(str).tolist()
+    sites_for_id = {str(row["FILE_ID"]): str(row[args.site_col]) if args.site_col in pheno.columns else "" for _, row in pheno.iterrows()}
     if args.nifti_dir and args.atlas:
         ts_dir_tmp = os.path.join(args.nifti_dir, "_roi_ts")
         os.makedirs(ts_dir_tmp, exist_ok=True)
@@ -116,7 +121,19 @@ def main():
         if args.labels_tsv:
             _, networks = load_cc_labels(args.labels_tsv)
         for sid in subject_ids:
-            ts = np.load(os.path.join(args.ts_dir, f"{sid}.npy"))
+            site = sites_for_id.get(sid, "")
+            direct = os.path.join(args.ts_dir, f"{sid}.npy")
+            alt1 = os.path.join(args.ts_dir, f"{site}_{sid}.npy") if site else ""
+            alt2 = os.path.join(args.ts_dir, f"{site}-{sid}.npy") if site else ""
+            pattern = glob.glob(os.path.join(args.ts_dir, f"*{sid}*.npy"))
+            chosen = None
+            for p in [direct, alt1, alt2] + pattern:
+                if p and os.path.exists(p):
+                    chosen = p
+                    break
+            if not chosen:
+                continue
+            ts = np.load(chosen)
             confounds = None
             if args.confounds_dir:
                 cpath = os.path.join(args.confounds_dir, f"{sid}.npy")
