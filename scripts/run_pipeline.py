@@ -67,6 +67,9 @@ def main():
     parser.add_argument("--loso", action="store_true")
     parser.add_argument("--tune_models", action="store_true")
     parser.add_argument("--output", type=str, default="pipeline_results.json")
+    parser.add_argument("--features_out_dir", type=str, default="")
+    parser.add_argument("--norm_features_out_dir", type=str, default="")
+    parser.add_argument("--skip_models", action="store_true")
     args = parser.parse_args()
 
     pheno = pd.read_csv(args.phenotype)
@@ -156,6 +159,14 @@ def main():
                     vec, _ = build_feature_vector(ts_clean, tr=args.tr, window_size=args.window_size, step=args.step)
             feats.append(vec)
         X = np.stack(feats, axis=0)
+    if args.features_out_dir:
+        os.makedirs(args.features_out_dir, exist_ok=True)
+        for sid, row in zip(subject_ids, X):
+            np.save(os.path.join(args.features_out_dir, f"{sid}.npy"), row)
+        np.save(os.path.join(args.features_out_dir, "_stack.npy"), X)
+        with open(os.path.join(args.features_out_dir, "_index.txt"), "w") as f:
+            for sid in subject_ids:
+                f.write(f"{sid}\n")
     covars = pheno[[args.site_col, args.age_col, args.sex_col]].copy()
     continuous = [args.age_col]
     categorical = [args.sex_col]
@@ -165,6 +176,20 @@ def main():
     covars_arr = covars[[args.age_col, args.sex_col]].values.astype(float)
     dev = personalized_deviation_maps(X_h[td_mask], X_h, covars=covars_arr)
     X_dev = dev["feature_z"]
+    if args.norm_features_out_dir:
+        os.makedirs(args.norm_features_out_dir, exist_ok=True)
+        for sid, row in zip(subject_ids, X_dev):
+            np.save(os.path.join(args.norm_features_out_dir, f"{sid}.npy"), row)
+        np.save(os.path.join(args.norm_features_out_dir, "_stack.npy"), X_dev)
+        with open(os.path.join(args.norm_features_out_dir, "_index.txt"), "w") as f:
+            for sid in subject_ids:
+                f.write(f"{sid}\n")
+    if args.skip_models:
+        out = {"saved_features": bool(args.features_out_dir), "saved_norm_features": bool(args.norm_features_out_dir), "n_subjects": len(subject_ids)}
+        with open(args.output, "w") as f:
+            json.dump(out, f)
+        print(json.dumps(out))
+        return
     groups = pheno[args.site_col].values
     if args.tune_models:
         cv_name = "loso" if args.loso else ("group" if args.cv_strategy == "group" else ("site_stratified" if args.cv_strategy == "site_stratified" else "stratified"))
