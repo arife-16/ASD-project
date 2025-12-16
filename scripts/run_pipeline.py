@@ -103,7 +103,12 @@ def main():
     if args.combine_only and args.components_out_dir and args.features_out_dir:
         os.makedirs(args.features_out_dir, exist_ok=True)
         comps = [c.strip() for c in (args.components.split(",") if args.components else []) if c.strip()]
-        order = comps if comps else ["fc_mean","fc_std","pc_mean","pc_std","strength_mean","strength_std","cluster_mean","cluster_std","alff","state_occ","transitions","dwell_mean","dwell_std","entropy","asymmetry"]
+        if comps:
+            order = comps
+        elif args.precision_mapping:
+            order = ["network_area"]
+        else:
+            order = ["fc_mean","fc_std","pc_mean","pc_std","strength_mean","strength_std","cluster_mean","cluster_std","alff","state_occ","transitions","dwell_mean","dwell_std","entropy","asymmetry"]
         feats = []
         n_done = 0
         print(json.dumps({"combine_start": {"n_subjects": len(subject_ids), "components_out_dir": args.components_out_dir, "features_out_dir": args.features_out_dir, "components": order}}), flush=True)
