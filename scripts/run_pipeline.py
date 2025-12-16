@@ -165,6 +165,13 @@ def main():
             
         feats = []
         for sid in subject_ids:
+            # Check if already processed
+            outd_chk = os.path.join(args.components_out_dir, "network_area") if args.components_out_dir else None
+            if outd_chk and os.path.exists(os.path.join(outd_chk, f"{sid}.npy")):
+                print(f"Skipping {sid}, already processed.", flush=True)
+                feats.append(np.load(os.path.join(outd_chk, f"{sid}.npy")))
+                continue
+
             # Find timeseries file
             # Priority: NIfTI file in ts_dir or nifti_dir
             # Fallback: .npy file
