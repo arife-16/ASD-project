@@ -1,6 +1,6 @@
-from typing import Dict, Tuple, Optional, Union
+from typing import Dict, Tuple, Optional, Union, Any
 import numpy as np
-from scipy.linalg import cholesky, cho_solve
+from scipy.linalg import cholesky, cho_solve, solve_triangular
 from sklearn.covariance import LedoitWolf
 from sklearn.linear_model import LinearRegression
 from sklearn.gaussian_process import GaussianProcessRegressor
@@ -139,15 +139,6 @@ def estimate_normative_model(
             model_data["gpr_object"] = gpr
             return model_data
             
-    elif model_type == "lowess":
-        pred_mean = pm
-        # ps shape depends on GPR implementation for multi-output
-        # Sklearn GPR with multi-target returns std as (n_samples,) if kernel is shared.
-        if ps.ndim == 1:
-            pred_std = np.tile(ps[:, np.newaxis], (1, n_features))
-        else:
-            pred_std = ps
-
     elif model_type == "lowess":
         # Use statsmodels lowess
         import statsmodels.api as sm
@@ -433,5 +424,160 @@ def fit_and_save_normative_model(
         model_data["y_train"] = td_features
         return model_data
         
-    # save_normative_model(model_data, output_path) # Removed internal save to avoid double saving/confusion
     return model_data
+
+
+def load_normative_model(model_path: str) -> Dict[str, Any]:
+    """Loads a saved normative model."""
+    if model_path.endswith(".npz"):
+        return dict(np.load(model_path, allow_pickle=True))
+    else:
+        with open(model_path, "rb") as f:
+            return pickle.load(f)
+
+
+def predict_normative_model(
+    model_data: Dict[str, Any],
+    covars: np.ndarray,
+    features: Optional[np.ndarray] = None,
+    use_gpu: bool = False
+) -> Dict[str, np.ndarray]:
+    """
+    Predicts mean (and std) for new subjects.
+    If features are provided, also calculates Z-scores.
+    """
+    model_type = model_data.get("model_type", "linear")
+    
+    # Standardize covariates
+    scaler_mean = model_data["scaler_mean"]
+    scaler_scale = model_data["scaler_scale"]
+    covars_s = (covars - scaler_mean) / scaler_scale
+    
+    n_samples = covars.shape[0]
+    # We don't know n_features yet unless features is passed or we look at alpha/coef
+    if "alpha" in model_data:
+        n_features = model_data["alpha"].shape[1]
+    elif "coef" in model_data:
+        n_features = model_data["coef"].shape[0] # Transposed
+    elif features is not None:
+        n_features = features.shape[1]
+    else:
+        n_features = 0
+
+    pred_mean = None
+    pred_std = None
+    
+    if model_type == "linear":
+        coef = model_data["coef"] # (n_features, n_covars)
+        intercept = model_data["intercept"] # (n_features,)
+        resid_std = model_data["resid_std"] # (n_features,)
+        
+        # Pred = X @ coef.T + intercept
+        pred_mean = covars_s @ coef.T + intercept
+        pred_std = np.tile(resid_std, (n_samples, 1))
+        
+    elif model_type == "gpr":
+        alpha = model_data["alpha"] # (n_train, n_features)
+        X_train = model_data["X_train"] # (n_train, n_covars)
+        kernel = model_data["kernel"] # sklearn kernel object
+        
+        # Check GPU
+        if use_gpu:
+            try:
+                import torch
+                if not torch.cuda.is_available():
+                    use_gpu = False
+            except ImportError:
+                use_gpu = False
+                
+        if use_gpu:
+            print("  Predicting GPR on GPU...", flush=True)
+            import torch
+            
+            # Kernel params
+            k_combined = kernel
+            k_expr = k_combined.k1
+            k_white = k_combined.k2
+            constant_val = k_expr.k1.constant_value
+            length_scale = k_expr.k2.length_scale
+            noise_level = k_white.noise_level
+            
+            X_test_torch = torch.tensor(covars_s, dtype=torch.float32).cuda()
+            X_train_torch = torch.tensor(X_train, dtype=torch.float32).cuda()
+            
+            # 1. Compute Kernel(X_test, X_train)
+            dists = torch.cdist(X_test_torch, X_train_torch, p=2)
+            K_trans = constant_val * torch.exp(-0.5 * (dists ** 2) / (length_scale ** 2))
+            
+            # 2. Predict Mean = K_trans @ alpha
+            alpha_torch = torch.tensor(alpha, dtype=torch.float32) # Keep on CPU first
+            
+            pred_mean = np.zeros((n_samples, n_features), dtype=np.float32)
+            
+            chunk_size = 20000
+            for start in range(0, n_features, chunk_size):
+                end = min(start + chunk_size, n_features)
+                alpha_chunk = alpha_torch[:, start:end].cuda()
+                res = torch.matmul(K_trans, alpha_chunk)
+                pred_mean[:, start:end] = res.cpu().numpy()
+                del res, alpha_chunk
+            
+            # 3. Predict Variance
+            L = model_data["L"]
+            L_torch = torch.tensor(L, dtype=torch.float32).cuda()
+            
+            # v_term = solve_triangular(L, K_trans.T)
+            v_term = torch.linalg.solve_triangular(L_torch, K_trans.T, upper=False)
+            
+            v_term_sq = torch.sum(v_term ** 2, dim=0) # (n_test,)
+            
+            pred_var = (constant_val + noise_level) - v_term_sq
+            pred_std_val = torch.sqrt(torch.clamp(pred_var, min=1e-8)).cpu().numpy()
+            
+            pred_std = np.tile(pred_std_val[:, np.newaxis], (1, n_features))
+            
+            del X_test_torch, X_train_torch, K_trans, L_torch, v_term
+            torch.cuda.empty_cache()
+            
+        else:
+            # CPU implementation
+            print("  Predicting GPR on CPU...", flush=True)
+            kernel = model_data["kernel"]
+            K_trans = kernel(covars_s, X_train) # (n_test, n_train)
+            
+            # Mean
+            pred_mean = np.zeros((n_samples, n_features))
+            chunk_size = 50000
+            for start in range(0, n_features, chunk_size):
+                end = min(start + chunk_size, n_features)
+                pred_mean[:, start:end] = K_trans @ alpha[:, start:end]
+                
+            # Variance
+            L = model_data["L"]
+            v_term = solve_triangular(L, K_trans.T, lower=True)
+            k_diag = kernel.diag(covars_s) # (n_test,)
+            
+            # Manual noise addition if needed, but kernel.diag usually handles signal
+            # We need to add noise_level manually to match K_train diagonal
+            noise_level = kernel.k2.noise_level
+            
+            pred_var = k_diag + noise_level - np.sum(v_term**2, axis=0)
+            pred_std_val = np.sqrt(np.maximum(pred_var, 1e-8))
+            
+            pred_std = np.tile(pred_std_val[:, np.newaxis], (1, n_features))
+
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
+
+    result = {
+        "pred_mean": pred_mean,
+        "pred_std": pred_std
+    }
+    
+    if features is not None:
+        # Z-score
+        pred_std_safe = np.where(pred_std < 1e-8, 1e-8, pred_std)
+        z = (features - pred_mean) / pred_std_safe
+        result["feature_z"] = z
+        
+    return result
