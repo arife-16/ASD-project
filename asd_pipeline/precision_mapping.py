@@ -1,70 +1,22 @@
 import numpy as np
 import os
-from typing import Tuple, List, Optional, Dict
-from nilearn.decomposition import DictLearning, CanICA
-from nilearn.image import load_img, resample_to_img, math_img
-from nilearn.masking import apply_mask
+from typing import Tuple, List, Optional, Dict, Union
+from nilearn.image import resample_to_img
 import nibabel as nib
+from scipy import sparse
+from .precision_loader import extract_dense_gm_timeseries, compute_sparse_connectivity
+
 try:
     from infomap import Infomap
 except ImportError:
     Infomap = None
 
-def compute_dense_connectivity(timeseries: np.ndarray, top_k_percent: float = 0.1) -> Tuple[List[Tuple[int, int, float]], int]:
-    """
-    Computes dense vertex-to-vertex correlation and thresholds to keep top K percent connections.
-    
-    Args:
-        timeseries: (n_timepoints, n_vertices)
-        top_k_percent: Percentile to keep (e.g., 0.1 means top 0.1%).
-        
-    Returns:
-        edges: List of (source, target, weight) tuples.
-        n_vertices: Number of vertices.
-    """
-    n_vertices = timeseries.shape[1]
-    
-    # Pearson correlation
-    # Note: For large N, this is huge. We compute it row-by-row or in blocks if needed.
-    # For N ~ 30k (surface), N^2 is manageable (~900M floats = 3.6GB).
-    # If N > 50k, we should be careful.
-    
-    # Standardize time series to make dot product equivalent to correlation
-    ts_std = (timeseries - timeseries.mean(axis=0)) / (timeseries.std(axis=0) + 1e-8)
-    
-    # Compute correlation matrix
-    corr_matrix = np.dot(ts_std.T, ts_std) / timeseries.shape[0]
-    
-    # Zero out diagonal
-    np.fill_diagonal(corr_matrix, 0)
-    
-    # Thresholding
-    # Find threshold value
-    # We only care about positive correlations usually for community detection
-    # or absolute values? Infomap usually works with flow/positive weights.
-    # Typically we use absolute correlation or just positive. Let's assume positive.
-    
-    # Get values to find percentile
-    # Sampling approach if matrix is too big?
-    # For exact percentile:
-    threshold = np.percentile(corr_matrix, 100 - top_k_percent)
-    
-    # Sparse representation
-    # Get indices where corr > threshold
-    sources, targets = np.where(corr_matrix > threshold)
-    weights = corr_matrix[sources, targets]
-    
-    edges = list(zip(sources, targets, weights))
-    return edges, n_vertices
-
-
-def run_infomap_community_detection(edges: List[Tuple[int, int, float]], n_nodes: int) -> np.ndarray:
+def run_infomap_community_detection(sparse_graph: sparse.csr_matrix) -> np.ndarray:
     """
     Runs Infomap community detection on the sparse graph.
     
     Args:
-        edges: List of (source, target, weight)
-        n_nodes: Number of nodes
+        sparse_graph: Sparse adjacency matrix (N_nodes x N_nodes)
         
     Returns:
         modules: Array of shape (n_nodes,) with module ID for each node.
@@ -74,18 +26,30 @@ def run_infomap_community_detection(edges: List[Tuple[int, int, float]], n_nodes
         
     im = Infomap("--two-level --silent")
     
-    # Add links
-    for source, target, weight in edges:
-        im.add_link(int(source), int(target), float(weight))
+    # Add links from sparse matrix
+    # sparse_graph is (N_nodes x N_nodes)
+    rows, cols = sparse_graph.nonzero()
+    weights = sparse_graph.data
+    
+    for i in range(len(rows)):
+        # Infomap uses 1-based indexing, python uses 0-based
+        source = int(rows[i]) + 1
+        target = int(cols[i]) + 1
+        weight = float(weights[i])
+        im.add_link(source, target, weight)
         
     # Run
     im.run()
     
     # Extract results
+    # Initialize with 0 (unassigned)
+    n_nodes = sparse_graph.shape[0]
     modules = np.zeros(n_nodes, dtype=int)
+    
     for node in im.tree:
         if node.is_leaf:
-            modules[node.node_id] = node.module_id
+            # node.node_id is 1-based index from add_link
+            modules[node.node_id - 1] = node.module_index
             
     return modules
 
@@ -97,14 +61,6 @@ def match_communities_to_template(
 ) -> np.ndarray:
     """
     Matches subject-specific communities to template networks based on spatial overlap (Dice).
-    
-    Args:
-        subject_modules: (n_vertices,) module IDs
-        template_labels: (n_vertices,) template network IDs (1..N)
-        n_template_networks: Number of networks in template
-        
-    Returns:
-        remapped_modules: (n_vertices,) with IDs matching template (1..N)
     """
     # Get unique subject modules
     subj_ids = np.unique(subject_modules)
@@ -133,8 +89,6 @@ def match_communities_to_template(
                     best_tid = tid
         
         # Assign subject module to best matching template network
-        # Note: Multiple subject modules can map to the same template network (fragmentation)
-        # or we can enforce 1-to-1 if needed, but usually we aggregate them.
         if best_tid > 0:
             remapped_modules[s_mask] = best_tid
             
@@ -148,15 +102,6 @@ def calculate_network_surface_areas(
 ) -> np.ndarray:
     """
     Calculates surface area (or voxel count) for each network.
-    
-    Args:
-        modules: (n_vertices,) network IDs (1..N)
-        n_networks: Number of networks expected
-        vertex_areas: (n_vertices,) Area of each vertex in mm^2. 
-                      If None, assumes unit area (voxel count).
-        
-    Returns:
-        areas: (n_networks,) area for each network (1..N)
     """
     areas = np.zeros(n_networks)
     
@@ -171,25 +116,71 @@ def calculate_network_surface_areas(
 
 
 def precision_mapping_workflow(
-    timeseries: np.ndarray, 
-    template_labels: np.ndarray,
+    timeseries_or_path: Union[str, np.ndarray], 
+    template_labels_path: Union[str, np.ndarray],
     top_k_percent: float = 0.1,
-    vertex_areas: Optional[np.ndarray] = None
+    vertex_areas: Optional[np.ndarray] = None,
+    mask_img: Optional[str] = None,
+    confounds: Optional[np.ndarray] = None
 ) -> np.ndarray:
     """
-    Full workflow: Dense Connectivity -> Infomap -> Template Matching -> Surface Area Features.
+    Full workflow: Dense GM Extraction -> Infomap -> Template Matching -> Surface Area Features.
+    
+    Args:
+        timeseries_or_path: Path to NIfTI or numpy array.
+        template_labels_path: Path to template NIfTI or numpy array.
+        top_k_percent: Percentile of edges to keep.
+        vertex_areas: Optional area per voxel.
+        mask_img: Path to GM mask (if None, uses MNI152).
+        confounds: Confounds for regression.
     """
-    # 1. Dense Connectivity & Thresholding
-    edges, n_vertices = compute_dense_connectivity(timeseries, top_k_percent)
     
-    # 2. Community Detection
-    modules = run_infomap_community_detection(edges, n_vertices)
+    # 1. Extract Dense GM Timeseries (and Mask)
+    if isinstance(timeseries_or_path, str):
+        # Use loader to extract from NIfTI
+        ts, masker = extract_dense_gm_timeseries(timeseries_or_path, confounds=confounds, mask_img=mask_img)
+        
+        # We also need to mask the template labels to match the GM voxels!
+        if isinstance(template_labels_path, str):
+            # Resample template to match masker
+            # Note: template is categorical, use nearest neighbor
+            # NiftiMasker can handle this but we need to be careful with interpolation
+            from nilearn import image
+            
+            # Load template image
+            tpl_img = nib.load(template_labels_path)
+            
+            # Resample to match functional data (or mask)
+            # masker.mask_img_ is the mask used
+            tpl_resampled = image.resample_to_img(
+                tpl_img, 
+                masker.mask_img_, 
+                interpolation='nearest'
+            )
+            
+            # Apply mask to get 1D array
+            template_labels = masker.transform(tpl_resampled).ravel()
+            # Convert back to int if needed
+            template_labels = np.round(template_labels).astype(int)
+        else:
+            template_labels = template_labels_path
+            
+    else:
+        # Pre-extracted array provided
+        ts = timeseries_or_path
+        template_labels = template_labels_path # Assume matching
+        
+    # 2. Sparse Connectivity
+    sparse_graph = compute_sparse_connectivity(ts, top_k_percent)
     
-    # 3. Template Matching
+    # 3. Community Detection
+    modules = run_infomap_community_detection(sparse_graph)
+    
+    # 4. Template Matching
     n_template_networks = int(np.max(template_labels))
     remapped_modules = match_communities_to_template(modules, template_labels, n_template_networks)
     
-    # 4. Feature Extraction
+    # 5. Feature Extraction
     areas = calculate_network_surface_areas(remapped_modules, n_template_networks, vertex_areas)
     
     return areas

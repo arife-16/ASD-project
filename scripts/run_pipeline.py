@@ -20,6 +20,18 @@ from asd_pipeline.atlas_labels import load_cc_labels
 from asd_pipeline.precision_mapping import precision_mapping_workflow
 
 
+def find_ts_file(sid: str, site: str, ts_dir: str) -> str:
+    direct = os.path.join(ts_dir, f"{sid}.npy")
+    alt1 = os.path.join(ts_dir, f"{site}_{sid}.npy") if site else ""
+    alt2 = os.path.join(ts_dir, f"{site}-{sid}.npy") if site else ""
+    pattern = glob.glob(os.path.join(ts_dir, f"*{sid}*.npy"))
+    chosen = None
+    for p in [direct, alt1, alt2] + pattern:
+        if p and os.path.exists(p):
+            chosen = p
+            break
+    return chosen
+
 def load_timeseries(subject_ids: List[str], ts_dir: str) -> List[np.ndarray]:
     series = []
     for sid in subject_ids:
@@ -79,6 +91,7 @@ def main():
     parser.add_argument("--normative_model", type=str, default="linear", choices=["linear", "lowess", "gpr"], help="Type of normative model: linear, lowess, or gpr")
     parser.add_argument("--precision_mapping", action="store_true", help="Use precision functional mapping (dense connectivity -> Infomap)")
     parser.add_argument("--template_labels_path", type=str, default="", help="Path to template labels NIfTI or CIFTI for precision mapping")
+    parser.add_argument("--gm_mask", type=str, default="", help="Path to Gray Matter mask for precision mapping (reduces voxel count)")
     args = parser.parse_args()
 
     pheno = pd.read_csv(args.phenotype)
@@ -130,59 +143,72 @@ def main():
             print(json.dumps(out), flush=True)
             return
     if args.precision_mapping:
+        # Fallback: if template_labels_path is missing but labels_tsv is a NIfTI, use it
+        if not args.template_labels_path and args.labels_tsv and (args.labels_tsv.endswith(".nii") or args.labels_tsv.endswith(".nii.gz")):
+            args.template_labels_path = args.labels_tsv
+            
         if not args.template_labels_path:
-            raise ValueError("--template_labels_path is required for precision mapping")
+            raise ValueError("--template_labels_path (or --labels_tsv with a NIfTI file) is required for precision mapping")
         
         # Load template
         # Assume template is in same space as timeseries (or we resample)
         # For simplicity, we assume .npy labels or .nii
+        template_labels = args.template_labels_path # pass path to workflow if needed, or load here
         if args.template_labels_path.endswith(".npy"):
             template_labels = np.load(args.template_labels_path)
-        else:
-            # Load NIfTI and get data
-            import nibabel as nib
-            img = nib.load(args.template_labels_path)
-            template_labels = img.get_fdata().ravel()
+        # If NIfTI, we let workflow handle it alongside masking
             
         feats = []
         for sid in subject_ids:
             # Find timeseries file
-            site = sites_for_id.get(sid, "")
-            direct = os.path.join(args.ts_dir, f"{sid}.npy")
-            alt1 = os.path.join(args.ts_dir, f"{site}_{sid}.npy") if site else ""
-            alt2 = os.path.join(args.ts_dir, f"{site}-{sid}.npy") if site else ""
-            pattern = glob.glob(os.path.join(args.ts_dir, f"*{sid}*.npy"))
+            # Priority: NIfTI file in ts_dir or nifti_dir
+            # Fallback: .npy file
+            
             chosen = None
-            for p in [direct, alt1, alt2] + pattern:
-                if p and os.path.exists(p):
-                    chosen = p
-                    break
+            # Check for NIfTI first if precision mapping (raw data preferred)
+            if args.nifti_dir:
+                nii = os.path.join(args.nifti_dir, f"{sid}.nii.gz")
+                if os.path.exists(nii):
+                    chosen = nii
+            
             if not chosen:
-                print(f"Warning: Could not find timeseries for {sid}", flush=True)
+                site = sites_for_id.get(sid, "")
+                # Try finding NIfTI in ts_dir
+                pat = glob.glob(os.path.join(args.ts_dir, f"*{sid}*.nii.gz"))
+                if pat:
+                    chosen = pat[0]
+                else:
+                    # Fallback to .npy (assuming it's voxelwise if user knows what they're doing)
+                    chosen = find_ts_file(sid, site, args.ts_dir)
+            
+            if not chosen:
+                print(f"Warning: Could not find timeseries (NIfTI or .npy) for {sid}", flush=True)
                 continue
                 
-            ts = np.load(chosen)
-            # ts should be (n_rois/vertices, n_time) usually in this pipeline
-            # But precision mapping expects (n_time, n_vertices) for sklearn/infomap usually
-            # Check shape
-            if ts.shape[0] < ts.shape[1]:
-                # Assume (n_rois, n_time) -> transpose to (n_time, n_rois)
-                ts = ts.T
-                
             # Run workflow
-            # Note: ts must be dense (vertices), not ROIs.
-            # If user passes ROI data, this won't work well (Infomap on 200 nodes is just graph clustering)
-            # But it works technically.
+            try:
+                if chosen.endswith(".npy"):
+                    ts = np.load(chosen)
+                    if ts.shape[0] < ts.shape[1]:
+                        ts = ts.T
+                    # If .npy, we assume it's already masked or user accepts high dim
+                    # We can't apply NIfTI mask to .npy easily without knowing shape
+                    areas = precision_mapping_workflow(ts, template_labels)
+                else:
+                    # Pass path to workflow to handle loading & masking
+                    # If gm_mask is not provided, precision_loader will default to MNI GM mask
+                    areas = precision_mapping_workflow(chosen, template_labels, mask_img=args.gm_mask)
             
-            areas = precision_mapping_workflow(ts, template_labels)
-            
-            # Save if components out
-            if args.components_out_dir:
-                outd = os.path.join(args.components_out_dir, "network_area")
-                os.makedirs(outd, exist_ok=True)
-                np.save(os.path.join(outd, f"{sid}.npy"), areas)
-                
-            feats.append(areas)
+                # Save if components out
+                if args.components_out_dir:
+                    outd = os.path.join(args.components_out_dir, "network_area")
+                    os.makedirs(outd, exist_ok=True)
+                    np.save(os.path.join(outd, f"{sid}.npy"), areas)
+                    
+                feats.append(areas)
+            except Exception as e:
+                print(f"Error processing {sid} for precision mapping: {e}", flush=True)
+                continue
             
         if len(feats) > 0:
             X = np.stack(feats, axis=0)
@@ -372,15 +398,7 @@ def main():
             _, networks = load_cc_labels(args.labels_tsv)
         for sid in subject_ids:
             site = sites_for_id.get(sid, "")
-            direct = os.path.join(args.ts_dir, f"{sid}.npy")
-            alt1 = os.path.join(args.ts_dir, f"{site}_{sid}.npy") if site else ""
-            alt2 = os.path.join(args.ts_dir, f"{site}-{sid}.npy") if site else ""
-            pattern = glob.glob(os.path.join(args.ts_dir, f"*{sid}*.npy"))
-            chosen = None
-            for p in [direct, alt1, alt2] + pattern:
-                if p and os.path.exists(p):
-                    chosen = p
-                    break
+            chosen = find_ts_file(sid, site, args.ts_dir)
             if not chosen:
                 continue
             ts = np.load(chosen)

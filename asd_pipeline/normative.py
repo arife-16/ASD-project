@@ -168,3 +168,81 @@ def personalized_deviation_maps(
         z = zscores(all_features, mean, std)
         m = mahalanobis(all_features, mvn_mean, mvn_cov)
         return {"feature_z": z, "mahalanobis": m}
+
+
+import pickle
+
+def save_normative_model(
+    model_data: Dict[str, Union[np.ndarray, object]], 
+    output_path: str
+):
+    """
+    Saves the normative model parameters to a file.
+    
+    Args:
+        model_data: Dictionary containing model parameters/objects.
+                    For Linear: 'coef', 'intercept', 'resid_std', 'scaler_mean', 'scaler_scale'
+                    For GPR: 'gpr_object', 'scaler_mean', 'scaler_scale'
+                    For Lowess: 'x_train', 'y_train', 'resid_std'
+        output_path: Path to save (.pkl or .npz).
+    """
+    if output_path.endswith(".pkl"):
+        with open(output_path, "wb") as f:
+            pickle.dump(model_data, f)
+    elif output_path.endswith(".npz"):
+        # Filter out non-array objects
+        arrays = {k: v for k, v in model_data.items() if isinstance(v, np.ndarray)}
+        np.savez(output_path, **arrays)
+    else:
+        # Default pickle
+        with open(output_path + ".pkl", "wb") as f:
+            pickle.dump(model_data, f)
+
+def fit_and_save_normative_model(
+    td_features: np.ndarray, 
+    td_covars: np.ndarray, 
+    output_path: str,
+    model_type: str = "linear"
+):
+    """
+    Fits the model on TD data and saves it.
+    """
+    # Standardize covariates
+    scaler = StandardScaler()
+    td_covars_s = scaler.fit_transform(td_covars)
+    
+    model_data = {
+        "model_type": model_type,
+        "scaler_mean": scaler.mean_,
+        "scaler_scale": scaler.scale_
+    }
+    
+    if model_type == "linear":
+        reg = LinearRegression()
+        reg.fit(td_covars_s, td_features)
+        
+        residuals = td_features - reg.predict(td_covars_s)
+        std_td = residuals.std(axis=0)
+        
+        model_data["coef"] = reg.coef_
+        model_data["intercept"] = reg.intercept_
+        model_data["resid_std"] = std_td
+        
+    elif model_type == "gpr":
+        kernel = ConstantKernel() * RBF() + WhiteKernel()
+        gpr = GaussianProcessRegressor(kernel=kernel, normalize_y=True, copy_X_train=False)
+        gpr.fit(td_covars_s, td_features)
+        model_data["gpr_object"] = gpr
+        
+    elif model_type == "lowess":
+        # Save training data for lazy evaluation
+        model_data["x_train"] = td_covars  # Save raw covariates
+        model_data["y_train"] = td_features
+        # Calculate residuals for std estimation (approximate via linear or smooth?)
+        # For simplicity in saving, we might just save data.
+        # Or pre-calculate std?
+        # Let's just save data.
+        pass
+        
+    save_normative_model(model_data, output_path)
+    return model_data
