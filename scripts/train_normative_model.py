@@ -73,6 +73,17 @@ def main():
         if col not in td_pheno.columns:
             raise ValueError(f"Covariate {col} not found in phenotype file")
             
+    # Helper to safe extract covariates
+    def extract_covariates(row, cols):
+        vals = []
+        for col in cols:
+            val = row[col]
+            # specific handling for SEX/Gender if string
+            if col.upper() in ["SEX", "GENDER"] and isinstance(val, str):
+                val = 0 if val.lower() in ["m", "male", "1"] else 1
+            vals.append(float(val))
+        return vals
+
     # Load Precomputed Features if provided
     if args.features_dir:
         print(f"Loading precomputed features from {args.features_dir}...", flush=True)
@@ -95,7 +106,7 @@ def main():
                 sid = row["FILE_ID"]
                 if sid in id_to_idx:
                     features_list.append(X_all[id_to_idx[sid]])
-                    covariates_list.append(row[cov_cols].values.astype(float))
+                    covariates_list.append(extract_covariates(row, cov_cols))
                 else:
                     print(f"Warning: Subject {sid} not found in feature stack.", flush=True)
         else:
@@ -105,7 +116,7 @@ def main():
                 fpath = os.path.join(args.features_dir, f"{sid}.npy")
                 if os.path.exists(fpath):
                     features_list.append(np.load(fpath))
-                    covariates_list.append(row[cov_cols].values.astype(float))
+                    covariates_list.append(extract_covariates(row, cov_cols))
                 else:
                     print(f"Warning: Subject {sid} feature file not found.", flush=True)
                     
@@ -164,7 +175,7 @@ def main():
                     )
                 
                 features_list.append(feat)
-                covariates_list.append(row[cov_cols].values.astype(float))
+                covariates_list.append(extract_covariates(row, cov_cols))
                 
             except Exception as e:
                 print(f"Error processing {sid}: {e}", flush=True)
