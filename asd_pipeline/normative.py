@@ -1,5 +1,6 @@
 from typing import Dict, Tuple, Optional, Union
 import numpy as np
+from scipy.linalg import cholesky, cho_solve
 from sklearn.covariance import LedoitWolf
 from sklearn.linear_model import LinearRegression
 from sklearn.gaussian_process import GaussianProcessRegressor
@@ -81,19 +82,47 @@ def estimate_normative_model(
             
             # 3. Create new GPR with fixed kernel
             # We set optimizer=None to prevent further optimization
-            gpr = GaussianProcessRegressor(kernel=gpr_opt.kernel_, normalize_y=True, copy_X_train=False, optimizer=None)
+            # Instead of using sklearn's fit (which can be slow/memory intensive for huge Y),
+            # we manually compute alpha = K^-1 Y using Cholesky.
             
-            print("  Fitting GPR on full feature set (using fixed kernel)...", flush=True)
-            gpr.fit(td_covars_s, td_features)
+            print("  Computing Kernel Matrix and Cholesky Decomposition...", flush=True)
+            kernel = gpr_opt.kernel_
+            K = kernel(td_covars_s) # (N, N)
+            
+            # Ensure positive definiteness (WhiteKernel handles diagonal, but safety check)
+            K[np.diag_indices_from(K)] += 1e-10 
+            
+            try:
+                L = cholesky(K, lower=True)
+            except np.linalg.LinAlgError:
+                print("  Warning: Kernel matrix not positive definite, adding jitter...", flush=True)
+                K[np.diag_indices_from(K)] += 1e-6
+                L = cholesky(K, lower=True)
+            
+            print("  Solving for weights (alpha)...", flush=True)
+            # alpha = L^-T L^-1 Y
+            alpha = cho_solve((L, True), td_features)
+            
+            # Save components
+            model_data.update({
+                "alpha": alpha,
+                "L": L,
+                "X_train": td_covars_s,
+                "kernel": kernel
+            })
+            
+            # Skip gpr.fit()
+            return model_data
             
         else:
             # Standard fit for smaller dimensions
             kernel = ConstantKernel() * RBF() + WhiteKernel()
             gpr = GaussianProcessRegressor(kernel=kernel, normalize_y=True, copy_X_train=False)
             gpr.fit(td_covars_s, td_features)
-
-        # Predict
-        pm, ps = gpr.predict(all_covars_s, return_std=True)
+            model_data["gpr_object"] = gpr
+            return model_data
+            
+    elif model_type == "lowess":
         pred_mean = pm
         # ps shape depends on GPR implementation for multi-output
         # Sklearn GPR with multi-target returns std as (n_samples,) if kernel is shared.
@@ -237,12 +266,13 @@ def fit_and_save_normative_model(
         reg.fit(td_covars_s, td_features)
         
         residuals = td_features - reg.predict(td_covars_s)
-        std_td = residuals.std(axis=0)
-        
-        model_data["coef"] = reg.coef_
-        model_data["intercept"] = reg.intercept_
-        model_data["resid_std"] = std_td
-        
+        model_data.update({
+            "coef": reg.coef_,
+            "intercept": reg.intercept_,
+            "resid_std": residuals.std(axis=0)
+        })
+        return model_data
+
     elif model_type == "gpr":
         kernel = ConstantKernel() * RBF() + WhiteKernel()
         gpr = GaussianProcessRegressor(kernel=kernel, normalize_y=True, copy_X_train=False)
@@ -253,11 +283,7 @@ def fit_and_save_normative_model(
         # Save training data for lazy evaluation
         model_data["x_train"] = td_covars  # Save raw covariates
         model_data["y_train"] = td_features
-        # Calculate residuals for std estimation (approximate via linear or smooth?)
-        # For simplicity in saving, we might just save data.
-        # Or pre-calculate std?
-        # Let's just save data.
-        pass
+        return model_data
         
-    save_normative_model(model_data, output_path)
+    # save_normative_model(model_data, output_path) # Removed internal save to avoid double saving/confusion
     return model_data

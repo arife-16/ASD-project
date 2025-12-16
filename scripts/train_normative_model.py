@@ -189,12 +189,16 @@ def main():
     
     print(f"Training model on {len(X)} subjects with {X.shape[1]} features...", flush=True)
     
-    fit_and_save_normative_model(
+    model_data = fit_and_save_normative_model(
         X, 
         covariates, 
         args.output_model, 
         model_type=args.normative_model
     )
+    
+    from asd_pipeline.normative import save_normative_model
+    save_normative_model(model_data, args.output_model)
+    
     print(f"Model saved to {args.output_model}", flush=True)
 
 if __name__ == "__main__":
