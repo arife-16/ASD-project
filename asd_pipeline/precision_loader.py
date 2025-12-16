@@ -37,27 +37,49 @@ def extract_dense_gm_timeseries(
 
 def compute_sparse_connectivity(time_series: np.ndarray, top_k_percent: float = 0.1) -> sparse.csr_matrix: 
     """ 
-    Computes dense correlation matrix but returns a SPARSE matrix to save RAM. 
-    Only keeps the strongest 'top_k_percent' connections (crucial for Infomap). 
+    Computes dense correlation matrix using a blocked approach to save RAM.
+    Only keeps the strongest 'top_k_percent' connections.
     """ 
-    # 1. Compute full correlation (fast with numpy dot product) 
-    # Correlation = (X.T @ X) / n_samples (since data is standardized) 
-    n_samples = time_series.shape[0] 
+    n_samples, n_voxels = time_series.shape
     
-    # Note: For very large N (e.g. > 60k), this dot product (60k x 60k) might still be heavy (28GB float64).
-    # If memory is an issue, we can compute blocks.
-    # Assuming 60k floats is ~3.6GB for the matrix, it fits in Colab RAM (12GB+).
-    corr_matrix = np.dot(time_series.T, time_series) / n_samples 
+    # 1. Estimate Threshold from a random subset to avoid computing full matrix
+    # Sample 2000 voxels (or fewer if total < 2000)
+    sample_size = min(2000, n_voxels)
+    indices = np.random.choice(n_voxels, sample_size, replace=False)
+    sample_ts = time_series[:, indices]
     
-    # 2. Thresholding 
-    # We only want the top x% strongest correlations for the graph 
-    threshold_val = np.percentile(corr_matrix, 100 - top_k_percent) 
+    # Compute correlation of sample against all voxels
+    # Shape: (sample_size, n_voxels)
+    sample_corr = np.dot(sample_ts.T, time_series) / n_samples
     
-    # 3. Create Sparse Graph 
-    # Zero out weak connections 
-    corr_matrix[corr_matrix < threshold_val] = 0 
+    # Compute threshold from this sample
+    # We want top k percent
+    threshold_val = np.percentile(sample_corr, 100 - top_k_percent)
+    del sample_corr # Free memory
     
-    # Convert to sparse format (efficient for Infomap) 
-    sparse_graph = sparse.csr_matrix(corr_matrix) 
+    # 2. Compute Correlation in Blocks and sparsify immediately
+    block_size = 1000 # Process 1000 rows at a time
+    sparse_rows = []
+    
+    for start_idx in range(0, n_voxels, block_size):
+        end_idx = min(start_idx + block_size, n_voxels)
+        
+        # Compute block correlation: (block_size, n_voxels)
+        # block_ts: (n_samples, block_width)
+        block_ts = time_series[:, start_idx:end_idx]
+        block_corr = np.dot(block_ts.T, time_series) / n_samples
+        
+        # Apply threshold
+        block_corr[block_corr < threshold_val] = 0
+        
+        # Convert to sparse CSR immediately
+        sparse_block = sparse.csr_matrix(block_corr)
+        sparse_rows.append(sparse_block)
+        
+        # Free memory
+        del block_corr, block_ts
+        
+    # 3. Stack all sparse blocks
+    sparse_graph = sparse.vstack(sparse_rows)
     
     return sparse_graph

@@ -155,7 +155,9 @@ def precision_mapping_workflow(
             tpl_resampled = image.resample_to_img(
                 tpl_img, 
                 masker.mask_img_, 
-                interpolation='nearest'
+                interpolation='nearest',
+                copy_header=True,
+                force_resample=True
             )
             
             # Apply mask to get 1D array
