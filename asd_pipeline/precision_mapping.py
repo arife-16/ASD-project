@@ -138,6 +138,7 @@ def precision_mapping_workflow(
     # 1. Extract Dense GM Timeseries (and Mask)
     if isinstance(timeseries_or_path, str):
         # Use loader to extract from NIfTI
+        print(f"[Precision] Extracting GM timeseries from {os.path.basename(timeseries_or_path)}...", flush=True)
         ts, masker = extract_dense_gm_timeseries(timeseries_or_path, confounds=confounds, mask_img=mask_img)
         
         # We also need to mask the template labels to match the GM voxels!
@@ -145,6 +146,7 @@ def precision_mapping_workflow(
             # Resample template to match masker
             # Note: template is categorical, use nearest neighbor
             # NiftiMasker can handle this but we need to be careful with interpolation
+            print("[Precision] Resampling template labels to match functional data...", flush=True)
             from nilearn import image
             
             # Load template image
@@ -173,17 +175,21 @@ def precision_mapping_workflow(
         template_labels = template_labels_path # Assume matching
         
     # 2. Sparse Connectivity
+    print("[Precision] Computing sparse connectivity graph...", flush=True)
     sparse_graph = compute_sparse_connectivity(ts, top_k_percent)
     
     # 3. Community Detection
+    print("[Precision] Running Infomap community detection...", flush=True)
     modules = run_infomap_community_detection(sparse_graph)
     
     # 4. Template Matching
+    print("[Precision] Matching communities to template...", flush=True)
     n_template_networks = int(np.max(template_labels))
     remapped_modules = match_communities_to_template(modules, template_labels, n_template_networks)
     
     # 5. Feature Extraction
     areas = calculate_network_surface_areas(remapped_modules, n_template_networks, vertex_areas)
+    print("[Precision] Feature extraction complete.", flush=True)
     
     return areas
 
