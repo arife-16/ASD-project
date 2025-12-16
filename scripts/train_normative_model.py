@@ -54,9 +54,9 @@ def main():
     pheno["FILE_ID"] = pheno["FILE_ID"].astype(str)
     
     # Filter TD
-    td_mask = pheno[args.dx_col] == args.td_label
+    td_mask = (pheno[args.dx_col] == args.td_label) & (pheno["FILE_ID"] != "no_filename")
     td_pheno = pheno[td_mask].reset_index(drop=True)
-    print(f"Found {len(td_pheno)} TD subjects out of {len(pheno)} total.", flush=True)
+    print(f"Found {len(td_pheno)} valid TD subjects out of {len(pheno)} total (removed 'no_filename').", flush=True)
     
     if len(td_pheno) == 0:
         raise ValueError("No TD subjects found with current filter settings.")

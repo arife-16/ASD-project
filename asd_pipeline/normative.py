@@ -58,25 +58,40 @@ def estimate_normative_model(
         
     elif model_type == "gpr":
         # Gaussian Process Regression
-        # We fit one GPR per feature to allow feature-specific hyperparameters
-        # Optimization: For very high dim features, this is slow. 
-        # But normative modeling is often feature-wise.
-        # To speed up, we can use a shared kernel if features are similar, 
-        # but standard normative modeling usually fits independent models per voxel/ROI.
+        # Optimization: For high-dimensional features (e.g., >10k), optimizing kernel parameters 
+        # on all features simultaneously is prohibitively slow.
+        # We use a heuristic: Optimize kernel on a random subset of features, then fix it for all.
         
-        # Check dimensionality. If > 500 features, warn or use a batched approach?
-        # For now, we'll implement a loop.
+        n_features_for_opt = min(2000, n_features)
         
-        kernel = ConstantKernel() * RBF() + WhiteKernel()
-        
-        # If too many features, maybe we should fallback or use a shared kernel approximation?
-        # Let's try fitting independent GPRs. 
-        # Note: This can be VERY slow for 400x400 FC.
-        # Optimization: Fit on PCA components of features? No, we need per-feature norms.
-        # Fallback: Use sklearn's multi-output GPR (shares kernel params).
-        
-        gpr = GaussianProcessRegressor(kernel=kernel, normalize_y=True, copy_X_train=False)
-        gpr.fit(td_covars_s, td_features)
+        if n_features > 5000:
+            print(f"  Optimizing GPR kernel on subset of {n_features_for_opt} features (Total: {n_features})...", flush=True)
+            
+            # 1. Sample features
+            rng = np.random.RandomState(42)
+            idx_subset = rng.choice(n_features, n_features_for_opt, replace=False)
+            td_features_subset = td_features[:, idx_subset]
+            
+            # 2. Fit to optimize hyperparameters
+            kernel = ConstantKernel() * RBF() + WhiteKernel()
+            gpr_opt = GaussianProcessRegressor(kernel=kernel, normalize_y=True, copy_X_train=False)
+            gpr_opt.fit(td_covars_s, td_features_subset)
+            
+            print(f"  Optimal kernel found: {gpr_opt.kernel_}", flush=True)
+            
+            # 3. Create new GPR with fixed kernel
+            # We set optimizer=None to prevent further optimization
+            gpr = GaussianProcessRegressor(kernel=gpr_opt.kernel_, normalize_y=True, copy_X_train=False, optimizer=None)
+            
+            print("  Fitting GPR on full feature set (using fixed kernel)...", flush=True)
+            gpr.fit(td_covars_s, td_features)
+            
+        else:
+            # Standard fit for smaller dimensions
+            kernel = ConstantKernel() * RBF() + WhiteKernel()
+            gpr = GaussianProcessRegressor(kernel=kernel, normalize_y=True, copy_X_train=False)
+            gpr.fit(td_covars_s, td_features)
+
         # Predict
         pm, ps = gpr.predict(all_covars_s, return_std=True)
         pred_mean = pm
