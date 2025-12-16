@@ -121,7 +121,8 @@ def precision_mapping_workflow(
     top_k_percent: float = 0.1,
     vertex_areas: Optional[np.ndarray] = None,
     mask_img: Optional[str] = None,
-    confounds: Optional[np.ndarray] = None
+    confounds: Optional[np.ndarray] = None,
+    use_gpu: bool = False
 ) -> np.ndarray:
     """
     Full workflow: Dense GM Extraction -> Infomap -> Template Matching -> Surface Area Features.
@@ -133,6 +134,7 @@ def precision_mapping_workflow(
         vertex_areas: Optional area per voxel.
         mask_img: Path to GM mask (if None, uses MNI152).
         confounds: Confounds for regression.
+        use_gpu: Enable GPU acceleration for connectivity calculation.
     """
     
     # 1. Extract Dense GM Timeseries (and Mask)
@@ -176,7 +178,7 @@ def precision_mapping_workflow(
         
     # 2. Sparse Connectivity
     print("[Precision] Computing sparse connectivity graph...", flush=True)
-    sparse_graph = compute_sparse_connectivity(ts, top_k_percent)
+    sparse_graph = compute_sparse_connectivity(ts, top_k_percent, use_gpu=use_gpu)
     
     # 3. Community Detection
     print("[Precision] Running Infomap community detection...", flush=True)

@@ -92,6 +92,7 @@ def main():
     parser.add_argument("--precision_mapping", action="store_true", help="Use precision functional mapping (dense connectivity -> Infomap)")
     parser.add_argument("--template_labels_path", type=str, default="", help="Path to template labels NIfTI or CIFTI for precision mapping")
     parser.add_argument("--gm_mask", type=str, default="", help="Path to Gray Matter mask for precision mapping (reduces voxel count)")
+    parser.add_argument("--use_gpu", action="store_true", help="Use GPU for acceleration where possible")
     args = parser.parse_args()
 
     pheno = pd.read_csv(args.phenotype)
@@ -205,11 +206,11 @@ def main():
                         ts = ts.T
                     # If .npy, we assume it's already masked or user accepts high dim
                     # We can't apply NIfTI mask to .npy easily without knowing shape
-                    areas = precision_mapping_workflow(ts, template_labels)
+                    areas = precision_mapping_workflow(ts, template_labels, use_gpu=args.use_gpu)
                 else:
                     # Pass path to workflow to handle loading & masking
                     # If gm_mask is not provided, precision_loader will default to MNI GM mask
-                    areas = precision_mapping_workflow(chosen, template_labels, mask_img=args.gm_mask or None)
+                    areas = precision_mapping_workflow(chosen, template_labels, mask_img=args.gm_mask or None, use_gpu=args.use_gpu)
             
                 # Save if components out
                 if args.components_out_dir:
