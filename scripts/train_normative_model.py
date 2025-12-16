@@ -189,6 +189,11 @@ def main():
     
     print(f"Training model on {len(X)} subjects with {X.shape[1]} features...", flush=True)
     
+    # Explicitly delete unused variables to free RAM before training
+    del pheno, td_pheno, covariates_list
+    import gc
+    gc.collect()
+    
     model_data = fit_and_save_normative_model(
         X, 
         covariates, 

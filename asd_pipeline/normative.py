@@ -99,11 +99,28 @@ def estimate_normative_model(
                 K[np.diag_indices_from(K)] += 1e-6
                 L = cholesky(K, lower=True)
             
-            print("  Solving for weights (alpha)...", flush=True)
+            print("  Solving for weights (alpha) in blocks to save RAM...", flush=True)
             # alpha = L^-T L^-1 Y
-            alpha = cho_solve((L, True), td_features)
+            # If Y is (476, 308546), it takes ~1.2GB RAM (float64).
+            # But intermediate operations might copy it.
+            # Let's solve in chunks of features (columns of Y)
+            
+            n_samples, n_features_all = td_features.shape
+            alpha = np.zeros_like(td_features)
+            
+            chunk_size = 50000 # Process 50k features at a time
+            
+            for start_col in range(0, n_features_all, chunk_size):
+                end_col = min(start_col + chunk_size, n_features_all)
+                # print(f"    Processing features {start_col}-{end_col}", flush=True)
+                y_chunk = td_features[:, start_col:end_col]
+                alpha[:, start_col:end_col] = cho_solve((L, True), y_chunk)
             
             # Save components
+            # Note: We cannot save the full alpha if it's too big for pickle? 
+            # 476 * 300k * 8 bytes = 1.2GB. Pickle should handle it (up to 4GB).
+            # But let's check.
+            
             model_data.update({
                 "alpha": alpha,
                 "L": L,
@@ -231,16 +248,17 @@ def save_normative_model(
         output_path: Path to save (.pkl or .npz).
     """
     if output_path.endswith(".pkl"):
+        # Use protocol 4 or 5 for large objects (>4GB support)
         with open(output_path, "wb") as f:
-            pickle.dump(model_data, f)
+            pickle.dump(model_data, f, protocol=pickle.HIGHEST_PROTOCOL)
     elif output_path.endswith(".npz"):
         # Filter out non-array objects
         arrays = {k: v for k, v in model_data.items() if isinstance(v, np.ndarray)}
-        np.savez(output_path, **arrays)
+        np.savez_compressed(output_path, **arrays) # Compressed to save space
     else:
         # Default pickle
         with open(output_path + ".pkl", "wb") as f:
-            pickle.dump(model_data, f)
+            pickle.dump(model_data, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 def fit_and_save_normative_model(
     td_features: np.ndarray, 
