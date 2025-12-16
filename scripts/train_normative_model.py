@@ -29,6 +29,7 @@ def main():
     
     # Normative Options
     parser.add_argument("--normative_model", type=str, default="linear", choices=["linear", "gpr", "lowess"])
+    parser.add_argument("--use_gpu", action="store_true", help="Use GPU for GPR training if available")
     parser.add_argument("--covariates", type=str, default="AGE_AT_SCAN,SEX", help="Comma-separated list of covariate columns")
     parser.add_argument("--site_col", type=str, default="SITE_ID")
     parser.add_argument("--dx_col", type=str, default="DX_GROUP", help="Column for diagnosis")
@@ -198,7 +199,8 @@ def main():
         X, 
         covariates, 
         args.output_model, 
-        model_type=args.normative_model
+        model_type=args.normative_model,
+        use_gpu=args.use_gpu
     )
     
     from asd_pipeline.normative import save_normative_model

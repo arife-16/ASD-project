@@ -264,7 +264,8 @@ def fit_and_save_normative_model(
     td_features: np.ndarray, 
     td_covars: np.ndarray, 
     output_path: str,
-    model_type: str = "linear"
+    model_type: str = "linear",
+    use_gpu: bool = False
 ):
     """
     Fits the model on TD data and saves it.
@@ -292,11 +293,140 @@ def fit_and_save_normative_model(
         return model_data
 
     elif model_type == "gpr":
-        kernel = ConstantKernel() * RBF() + WhiteKernel()
-        gpr = GaussianProcessRegressor(kernel=kernel, normalize_y=True, copy_X_train=False)
-        gpr.fit(td_covars_s, td_features)
-        model_data["gpr_object"] = gpr
+        # Gaussian Process Regression
+        # Optimization: For high-dimensional features (e.g., >10k), optimizing kernel parameters 
+        # on all features simultaneously is prohibitively slow.
+        # We use a heuristic: Optimize kernel on a random subset of features, then fix it for all.
         
+        n_features = td_features.shape[1]
+        n_features_for_opt = min(2000, n_features)
+        
+        # 1. Optimize Hyperparameters (Always on CPU via Sklearn for robustness)
+        print(f"  Optimizing GPR kernel on subset of {n_features_for_opt} features (Total: {n_features})...", flush=True)
+        
+        rng = np.random.RandomState(42)
+        idx_subset = rng.choice(n_features, n_features_for_opt, replace=False)
+        td_features_subset = td_features[:, idx_subset]
+        
+        kernel = ConstantKernel() * RBF() + WhiteKernel()
+        gpr_opt = GaussianProcessRegressor(kernel=kernel, normalize_y=True, copy_X_train=False)
+        gpr_opt.fit(td_covars_s, td_features_subset)
+        
+        print(f"  Optimal kernel found: {gpr_opt.kernel_}", flush=True)
+        
+        # 2. Fit on Full Data (CPU Block-wise or GPU)
+        if use_gpu:
+            try:
+                import torch
+                if not torch.cuda.is_available():
+                    print("  Warning: GPU requested but not available. Falling back to CPU.", flush=True)
+                    use_gpu = False
+            except ImportError:
+                print("  Warning: Torch not installed. Falling back to CPU.", flush=True)
+                use_gpu = False
+
+        if use_gpu:
+            print("  Using GPU for GPR fitting...", flush=True)
+            import torch
+            
+            # Extract kernel params from sklearn
+            # k1 = Constant * RBF, k2 = White
+            # k1.k1 = Constant, k1.k2 = RBF
+            k_combined = gpr_opt.kernel_
+            k_expr = k_combined.k1
+            k_white = k_combined.k2
+            
+            constant_val = k_expr.k1.constant_value
+            length_scale = k_expr.k2.length_scale
+            noise_level = k_white.noise_level
+            
+            # Prepare Data on GPU
+            X_torch = torch.tensor(td_covars_s, dtype=torch.float32).cuda()
+            Y_torch = torch.tensor(td_features, dtype=torch.float32) # Keep Y on CPU initially if huge
+            
+            # Compute Kernel Matrix K on GPU
+            # RBF: exp(-0.5 * dist^2 / l^2)
+            # dist^2 = x^2 + y^2 - 2xy
+            # Pytorch cdist computes euclidean distance (sqrt(dist^2))
+            
+            # Manual RBF
+            dists = torch.cdist(X_torch, X_torch, p=2) # (N, N)
+            K = constant_val * torch.exp(-0.5 * (dists ** 2) / (length_scale ** 2))
+            
+            # Add noise + jitter
+            K += torch.eye(K.shape[0]).cuda() * (noise_level + 1e-6)
+            
+            # Cholesky
+            print("  Computing Cholesky on GPU...", flush=True)
+            L = torch.linalg.cholesky(K)
+            
+            # Solve alpha = K^-1 Y = L^-T L^-1 Y
+            # We solve in blocks if Y is huge, even on GPU
+            print("  Solving weights on GPU...", flush=True)
+            
+            # Move Y to GPU in chunks if it doesn't fit
+            # 1.2GB fits in VRAM easily.
+            try:
+                Y_gpu = Y_torch.cuda()
+                alpha_gpu = torch.cholesky_solve(Y_gpu, L)
+                alpha = alpha_gpu.cpu().numpy()
+                del Y_gpu, alpha_gpu
+            except RuntimeError as e: # OOM
+                print(f"  GPU OOM ({e}), switching to block-wise GPU solve...", flush=True)
+                alpha = np.zeros_like(td_features)
+                chunk_size = 20000
+                for start in range(0, n_features, chunk_size):
+                    end = min(start + chunk_size, n_features)
+                    y_chunk = Y_torch[:, start:end].cuda()
+                    res = torch.cholesky_solve(y_chunk, L)
+                    alpha[:, start:end] = res.cpu().numpy()
+                    del res, y_chunk
+                    torch.cuda.empty_cache()
+
+            # Save
+            model_data.update({
+                "alpha": alpha,
+                "L": L.cpu().numpy(),
+                "X_train": td_covars_s,
+                "kernel": gpr_opt.kernel_ # Save the sklearn kernel object for reference
+            })
+            
+            del X_torch, K, L
+            torch.cuda.empty_cache()
+            return model_data
+            
+        else:
+            # CPU Implementation (Block-wise)
+            print("  Computing Kernel Matrix and Cholesky Decomposition (CPU)...", flush=True)
+            kernel = gpr_opt.kernel_
+            K = kernel(td_covars_s)
+            K[np.diag_indices_from(K)] += 1e-10 
+            
+            try:
+                L = cholesky(K, lower=True)
+            except np.linalg.LinAlgError:
+                print("  Warning: Kernel matrix not positive definite, adding jitter...", flush=True)
+                K[np.diag_indices_from(K)] += 1e-6
+                L = cholesky(K, lower=True)
+            
+            print("  Solving for weights (alpha) in blocks to save RAM...", flush=True)
+            n_samples, n_features_all = td_features.shape
+            alpha = np.zeros_like(td_features)
+            chunk_size = 50000
+            
+            for start_col in range(0, n_features_all, chunk_size):
+                end_col = min(start_col + chunk_size, n_features_all)
+                y_chunk = td_features[:, start_col:end_col]
+                alpha[:, start_col:end_col] = cho_solve((L, True), y_chunk)
+            
+            model_data.update({
+                "alpha": alpha,
+                "L": L,
+                "X_train": td_covars_s,
+                "kernel": kernel
+            })
+            return model_data
+
     elif model_type == "lowess":
         # Save training data for lazy evaluation
         model_data["x_train"] = td_covars  # Save raw covariates
