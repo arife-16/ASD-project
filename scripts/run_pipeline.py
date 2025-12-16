@@ -75,6 +75,7 @@ def main():
     parser.add_argument("--combine_only", action="store_true")
     parser.add_argument("--adj_thr", type=float, default=0.3)
     parser.add_argument("--external_norm_params", type=str, default="")
+    parser.add_argument("--normative_model", type=str, default="linear", choices=["linear", "lowess", "gpr"], help="Type of normative model: linear, lowess, or gpr")
     args = parser.parse_args()
 
     pheno = pd.read_csv(args.phenotype)
@@ -579,7 +580,7 @@ def main():
             s = np.where(std < 1e-8, 1e-8, std)
             X_dev = (X_h - mean) / s
     else:
-        dev = personalized_deviation_maps(X_h[td_mask], X_h, covars=covars_arr)
+        dev = personalized_deviation_maps(X_h[td_mask], X_h, covars=covars_arr, model_type=args.normative_model)
         X_dev = dev["feature_z"]
     if args.norm_features_out_dir:
         os.makedirs(args.norm_features_out_dir, exist_ok=True)
