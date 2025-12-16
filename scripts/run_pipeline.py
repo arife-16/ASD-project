@@ -17,6 +17,7 @@ from asd_pipeline.atlas import extract_roi_timeseries
 from asd_pipeline.confounds import build_confounds
 from asd_pipeline.connectome import build_connectome_feature_vector
 from asd_pipeline.atlas_labels import load_cc_labels
+from asd_pipeline.precision_mapping import precision_mapping_workflow
 
 
 def load_timeseries(subject_ids: List[str], ts_dir: str) -> List[np.ndarray]:
@@ -76,6 +77,8 @@ def main():
     parser.add_argument("--adj_thr", type=float, default=0.3)
     parser.add_argument("--external_norm_params", type=str, default="")
     parser.add_argument("--normative_model", type=str, default="linear", choices=["linear", "lowess", "gpr"], help="Type of normative model: linear, lowess, or gpr")
+    parser.add_argument("--precision_mapping", action="store_true", help="Use precision functional mapping (dense connectivity -> Infomap)")
+    parser.add_argument("--template_labels_path", type=str, default="", help="Path to template labels NIfTI or CIFTI for precision mapping")
     args = parser.parse_args()
 
     pheno = pd.read_csv(args.phenotype)
@@ -126,7 +129,67 @@ def main():
                 json.dump(out, f)
             print(json.dumps(out), flush=True)
             return
-    if args.nifti_dir and args.atlas:
+    if args.precision_mapping:
+        if not args.template_labels_path:
+            raise ValueError("--template_labels_path is required for precision mapping")
+        
+        # Load template
+        # Assume template is in same space as timeseries (or we resample)
+        # For simplicity, we assume .npy labels or .nii
+        if args.template_labels_path.endswith(".npy"):
+            template_labels = np.load(args.template_labels_path)
+        else:
+            # Load NIfTI and get data
+            import nibabel as nib
+            img = nib.load(args.template_labels_path)
+            template_labels = img.get_fdata().ravel()
+            
+        feats = []
+        for sid in subject_ids:
+            # Find timeseries file
+            site = sites_for_id.get(sid, "")
+            direct = os.path.join(args.ts_dir, f"{sid}.npy")
+            alt1 = os.path.join(args.ts_dir, f"{site}_{sid}.npy") if site else ""
+            alt2 = os.path.join(args.ts_dir, f"{site}-{sid}.npy") if site else ""
+            pattern = glob.glob(os.path.join(args.ts_dir, f"*{sid}*.npy"))
+            chosen = None
+            for p in [direct, alt1, alt2] + pattern:
+                if p and os.path.exists(p):
+                    chosen = p
+                    break
+            if not chosen:
+                print(f"Warning: Could not find timeseries for {sid}", flush=True)
+                continue
+                
+            ts = np.load(chosen)
+            # ts should be (n_rois/vertices, n_time) usually in this pipeline
+            # But precision mapping expects (n_time, n_vertices) for sklearn/infomap usually
+            # Check shape
+            if ts.shape[0] < ts.shape[1]:
+                # Assume (n_rois, n_time) -> transpose to (n_time, n_rois)
+                ts = ts.T
+                
+            # Run workflow
+            # Note: ts must be dense (vertices), not ROIs.
+            # If user passes ROI data, this won't work well (Infomap on 200 nodes is just graph clustering)
+            # But it works technically.
+            
+            areas = precision_mapping_workflow(ts, template_labels)
+            
+            # Save if components out
+            if args.components_out_dir:
+                outd = os.path.join(args.components_out_dir, "network_area")
+                os.makedirs(outd, exist_ok=True)
+                np.save(os.path.join(outd, f"{sid}.npy"), areas)
+                
+            feats.append(areas)
+            
+        if len(feats) > 0:
+            X = np.stack(feats, axis=0)
+        else:
+            X = np.empty((0,))
+            
+    elif args.nifti_dir and args.atlas:
         ts_dir_tmp = os.path.join(args.nifti_dir, "_roi_ts")
         os.makedirs(ts_dir_tmp, exist_ok=True)
         for sid in subject_ids:
