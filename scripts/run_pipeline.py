@@ -202,7 +202,7 @@ def main():
                 else:
                     # Pass path to workflow to handle loading & masking
                     # If gm_mask is not provided, precision_loader will default to MNI GM mask
-                    areas = precision_mapping_workflow(chosen, template_labels, mask_img=args.gm_mask)
+                    areas = precision_mapping_workflow(chosen, template_labels, mask_img=args.gm_mask or None)
             
                 # Save if components out
                 if args.components_out_dir:
@@ -599,6 +599,17 @@ def main():
         with open(os.path.join(args.features_out_dir, "_index.txt"), "w") as f:
             for sid in subject_ids:
                 f.write(f"{sid}\n")
+    if args.site_col not in pheno.columns:
+        # Fallback for common variations
+        if "SITE_ID" in pheno.columns:
+            args.site_col = "SITE_ID"
+        elif "site_id" in pheno.columns:
+            args.site_col = "site_id"
+        else:
+            print(f"Warning: Site column '{args.site_col}' not found in phenotype file. Assuming single site or skipping harmonization if used.", flush=True)
+            # Create a dummy column if needed to prevent crash, but harmonization requires site
+            pheno[args.site_col] = "SITE_1"
+    
     covars = pheno[[args.site_col, args.age_col, args.sex_col]].copy()
     continuous = [args.age_col]
     categorical = [args.sex_col]
