@@ -93,8 +93,8 @@ def main():
         index_path = os.path.join(args.features_dir, "_index.txt")
         
         if os.path.exists(stack_path) and os.path.exists(index_path):
-            # Load stack
-            X_all = np.load(stack_path)
+            # Load stack in mmap mode to save RAM (only load necessary rows)
+            X_all = np.load(stack_path, mmap_mode='r')
             with open(index_path, "r") as f:
                 stack_ids = [line.strip() for line in f]
             
@@ -106,10 +106,15 @@ def main():
             for idx, row in td_pheno.iterrows():
                 sid = row["FILE_ID"]
                 if sid in id_to_idx:
-                    features_list.append(X_all[id_to_idx[sid]])
+                    # Copy only the specific subject's data into memory
+                    features_list.append(np.array(X_all[id_to_idx[sid]]))
                     covariates_list.append(extract_covariates(row, cov_cols))
                 else:
                     print(f"Warning: Subject {sid} not found in feature stack.", flush=True)
+            
+            # Close mmap if possible (though python handles it)
+            del X_all
+            
         else:
             # Load individual files
             for idx, row in td_pheno.iterrows():
