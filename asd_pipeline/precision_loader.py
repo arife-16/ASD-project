@@ -58,8 +58,12 @@ def compute_sparse_connectivity(time_series: np.ndarray, top_k_percent: float = 
     del sample_corr # Free memory
     
     # 2. Compute Correlation in Blocks and sparsify immediately
-    block_size = 1000 # Process 1000 rows at a time
+    # Drastically reduce block size to prevent memory spikes
+    block_size = 500  # Smaller block size
     sparse_rows = []
+    
+    # Cast to float32 to save 50% RAM
+    time_series = time_series.astype(np.float32)
     
     for start_idx in range(0, n_voxels, block_size):
         end_idx = min(start_idx + block_size, n_voxels)
@@ -67,6 +71,9 @@ def compute_sparse_connectivity(time_series: np.ndarray, top_k_percent: float = 
         # Compute block correlation: (block_size, n_voxels)
         # block_ts: (n_samples, block_width)
         block_ts = time_series[:, start_idx:end_idx]
+        
+        # Use float32 dot product
+        # Result shape: (500, 60000) * 4 bytes ≈ 120MB per block (Very safe)
         block_corr = np.dot(block_ts.T, time_series) / n_samples
         
         # Apply threshold
@@ -76,8 +83,10 @@ def compute_sparse_connectivity(time_series: np.ndarray, top_k_percent: float = 
         sparse_block = sparse.csr_matrix(block_corr)
         sparse_rows.append(sparse_block)
         
-        # Free memory
+        # Aggressively free memory
         del block_corr, block_ts
+        import gc
+        gc.collect()
         
     # 3. Stack all sparse blocks
     sparse_graph = sparse.vstack(sparse_rows)
