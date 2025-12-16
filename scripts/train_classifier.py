@@ -53,9 +53,22 @@ def main():
     print(f"Classes found: {classes}", flush=True)
     
     # Simple mapping
-    y_bin = np.zeros_like(y)
-    y_bin[y == 1] = 1 # ASD
-    y_bin[y == 2] = 0 # TD
+    y_bin = np.zeros(len(y), dtype=int)
+    
+    # Check if we have standard 1/2 labels
+    if 1 in classes and 2 in classes:
+        print("Mapping labels: 1 (ASD) -> 1, 2 (TD) -> 0", flush=True)
+        y_bin[y == 1] = 1 # ASD
+        y_bin[y == 2] = 0 # TD
+    elif 0 in classes and 1 in classes:
+        print("Labels are already 0/1. Assuming 1=ASD, 0=TD.", flush=True)
+        y_bin = y.astype(int)
+    else:
+        print(f"Warning: Unexpected labels {classes}. Treating {classes[0]} as 0 and {classes[-1]} as 1.", flush=True)
+        y_bin[y == classes[-1]] = 1
+        y_bin[y == classes[0]] = 0
+        
+    print(f"Class distribution after mapping: {np.bincount(y_bin)} (0=TD, 1=ASD)", flush=True)
     
     # 3. Train and Evaluate
     print(f"Starting training with strategy: {args.cv_strategy}...", flush=True)
