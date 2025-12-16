@@ -72,6 +72,26 @@ def main():
         plt.savefig(os.path.join(args.output_dir, "age_deviation_scatter.png"))
         plt.close()
         
+    # 5. Outlier Count Analysis
+    if "outlier_count_total" in df.columns:
+        print("Generating Outlier Count analysis...", flush=True)
+        
+        # Boxplot
+        plt.figure(figsize=(8, 6))
+        sns.boxplot(data=df, x="Diagnosis", y="outlier_count_total")
+        plt.title("Number of Extreme Deviations (|Z| > 1.96)")
+        plt.ylabel("Count of Significant Regions")
+        plt.savefig(os.path.join(args.output_dir, "outlier_count_boxplot.png"))
+        plt.close()
+        
+        # Histogram
+        plt.figure(figsize=(10, 6))
+        sns.histplot(data=df, x="outlier_count_total", hue="Diagnosis", kde=True, bins=30, alpha=0.6)
+        plt.title("Distribution of Extreme Deviations")
+        plt.xlabel("Count of |Z| > 1.96")
+        plt.savefig(os.path.join(args.output_dir, "outlier_count_histogram.png"))
+        plt.close()
+        
     print(f"Plots saved to {args.output_dir}", flush=True)
 
 if __name__ == "__main__":
