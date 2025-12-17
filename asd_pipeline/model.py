@@ -40,6 +40,8 @@ def build_models() -> List[Pipeline]:
     models.append(Pipeline([("selector", NormDiffSelector(k=1000)), ("rf", RandomForestClassifier(n_estimators=500, class_weight="balanced", n_jobs=-1, random_state=42))]))
     models.append(Pipeline([("scaler", StandardScaler()), ("selector", NormDiffSelector(k=1500)), ("pca", PCA(n_components=0.95, whiten=True, random_state=42)), ("svc", SVC(C=1.0, kernel="rbf", gamma="scale", class_weight="balanced", probability=True, random_state=42))]))
     models.append(Pipeline([("selector", NormDiffSelector(k=1000)), ("gb", GradientBoostingClassifier(n_estimators=300, learning_rate=0.05, max_depth=3, random_state=42))]))
+    models.append(Pipeline([("scaler", StandardScaler()), ("selector", NormDiffSelector(k=1000)), ("mlp", MLPClassifier(hidden_layer_sizes=(100,), activation="relu", solver="adam", alpha=0.001, max_iter=1000, random_state=42))]))
+    models.append(Pipeline([("scaler", StandardScaler()), ("selector", NormDiffSelector(k=1000)), ("mlp", MLPClassifier(hidden_layer_sizes=(100, 50), activation="relu", solver="adam", alpha=0.001, max_iter=1000, random_state=42))]))
     return models
 
 
@@ -84,7 +86,7 @@ def evaluate_models(X: np.ndarray, y: np.ndarray, cv_strategy: str = "stratified
     else:
         cv = StratifiedKFold(n_splits=cv_splits, shuffle=True, random_state=random_state)
     models = build_models()
-    names = ["logistic_l2", "logistic_elasticnet", "linear_svc_calibrated", "svm_rbf", "random_forest", "svm_rbf_pca", "gradient_boosting"]
+    names = ["logistic_l2", "logistic_elasticnet", "linear_svc_calibrated", "svm_rbf", "random_forest", "svm_rbf_pca", "gradient_boosting", "mlp_1layer", "mlp_2layer"]
     scoring = {"roc_auc": "roc_auc", "f1": "f1", "accuracy": "accuracy"}
     out: Dict[str, Dict[str, float]] = {}
     for name, model in zip(names, models):
@@ -103,7 +105,7 @@ def evaluate_models_tuned(X: np.ndarray, y: np.ndarray, cv_strategy: str = "stra
     else:
         cv = StratifiedKFold(n_splits=cv_splits, shuffle=True, random_state=random_state)
     models = build_models()
-    names = ["logistic_l2", "logistic_elasticnet", "linear_svc_calibrated", "svm_rbf", "random_forest", "svm_rbf_pca", "gradient_boosting"]
+    names = ["logistic_l2", "logistic_elasticnet", "linear_svc_calibrated", "svm_rbf", "random_forest", "svm_rbf_pca", "gradient_boosting", "mlp_1layer", "mlp_2layer"]
     grids = {
         "logistic_l2": {"selector__k": [300, 500, 1000], "clf__C": [0.1, 1.0, 10.0]},
         "logistic_elasticnet": {"selector__k": [300, 500, 1000], "clf__C": [0.1, 1.0, 10.0], "clf__l1_ratio": [0.2, 0.5, 0.8]},
@@ -112,6 +114,8 @@ def evaluate_models_tuned(X: np.ndarray, y: np.ndarray, cv_strategy: str = "stra
         "random_forest": {"selector__k": [500, 1000], "rf__n_estimators": [200, 500, 800], "rf__max_depth": [None, 10, 20], "rf__min_samples_leaf": [1, 2, 5]},
         "svm_rbf_pca": {"selector__k": [1000, 1500], "pca__n_components": [0.90, 0.95, 0.99], "svc__C": [0.1, 1.0, 10.0], "svc__gamma": ["scale", 0.01]},
         "gradient_boosting": {"gb__n_estimators": [200, 300, 500], "gb__learning_rate": [0.03, 0.05, 0.1], "gb__max_depth": [2, 3, 4]},
+        "mlp_1layer": {"selector__k": [500, 1000], "mlp__hidden_layer_sizes": [(50,), (100,), (200,)], "mlp__alpha": [0.0001, 0.001, 0.01]},
+        "mlp_2layer": {"selector__k": [500, 1000], "mlp__hidden_layer_sizes": [(50, 25), (100, 50), (200, 100)], "mlp__alpha": [0.0001, 0.001, 0.01]},
     }
     scoring = {"roc_auc": "roc_auc", "f1": "f1", "accuracy": "accuracy"}
     out: Dict[str, Dict[str, float]] = {}
