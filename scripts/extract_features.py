@@ -321,58 +321,58 @@ def main():
                                      print(f"  Match found at {res:.3f}mm!", flush=True)
                                      break
                          
-                        if not matched_mask and best_diff < 100:
-                            print(f"  Closest match: {best_res:.3f}mm with {best_diff} difference. (Not exact)", flush=True)
-                            
-                    # 5. If no match, try Reconstruct Mask from Probability Map (Force Top K)
-                    if not matched_mask and best_res > 0:
-                        print(f"  Attempting to reconstruct mask from GM probabilities (Force Top {n_features})...", flush=True)
-                        try:
-                            # Load GM Prob
-                            dataset = datasets.fetch_icbm152_2009()
-                            gm_prob = image.load_img(dataset.gm)
-                            
-                            # Construct affine for best resolution
-                            # Use the best resolution found in step 4
-                            new_affine = gm_prob.affine.copy()
-                            new_affine[:3, :3] *= best_res
-                            
-                            # Resample probability map
-                            resampled_prob = image.resample_img(
-                                gm_prob,
-                                target_affine=new_affine,
-                                interpolation='linear',
-                                force_resample=True,
-                                copy_header=True
-                            )
-                            
-                            # Flatten and find Top K
-                            prob_data = resampled_prob.get_fdata()
-                            flat_prob = prob_data.ravel()
-                            
-                            # Get indices of top K
-                            # argsort is ascending, so take tail
-                            top_k_indices = np.argsort(flat_prob)[-n_features:]
-                            
-                            # Create binary mask
-                            mask_data = np.zeros_like(flat_prob, dtype=np.int8)
-                            mask_data[top_k_indices] = 1
-                            mask_data = mask_data.reshape(prob_data.shape)
-                            
-                            matched_mask = image.new_img_like(resampled_prob, mask_data)
-                            print(f"  Reconstructed mask with exactly {np.sum(mask_data)} voxels.", flush=True)
-                            
-                        except Exception as e:
-                            print(f"  Reconstruction failed: {e}", flush=True)
-                            
-                    if matched_mask:
-                        print("  Resampling Atlas to Mask space...", flush=True)
-                        
-                        # Update masker to use the matched mask
-                        masker = maskers.NiftiMasker(mask_img=matched_mask)
-                        masker.fit()
-                        
-                        # Resample Atlas to match the Mask
+                         if not matched_mask and best_diff < 100:
+                             print(f"  Closest match: {best_res:.3f}mm with {best_diff} difference. (Not exact)", flush=True)
+                             
+                     # 5. If no match, try Reconstruct Mask from Probability Map (Force Top K)
+                     if not matched_mask and best_res > 0:
+                         print(f"  Attempting to reconstruct mask from GM probabilities (Force Top {n_features})...", flush=True)
+                         try:
+                             # Load GM Prob
+                             dataset = datasets.fetch_icbm152_2009()
+                             gm_prob = image.load_img(dataset.gm)
+                             
+                             # Construct affine for best resolution
+                             # Use the best resolution found in step 4
+                             new_affine = gm_prob.affine.copy()
+                             new_affine[:3, :3] *= best_res
+                             
+                             # Resample probability map
+                             resampled_prob = image.resample_img(
+                                 gm_prob,
+                                 target_affine=new_affine,
+                                 interpolation='linear',
+                                 force_resample=True,
+                                 copy_header=True
+                             )
+                             
+                             # Flatten and find Top K
+                             prob_data = resampled_prob.get_fdata()
+                             flat_prob = prob_data.ravel()
+                             
+                             # Get indices of top K
+                             # argsort is ascending, so take tail
+                             top_k_indices = np.argsort(flat_prob)[-n_features:]
+                             
+                             # Create binary mask
+                             mask_data = np.zeros_like(flat_prob, dtype=np.int8)
+                             mask_data[top_k_indices] = 1
+                             mask_data = mask_data.reshape(prob_data.shape)
+                             
+                             matched_mask = image.new_img_like(resampled_prob, mask_data)
+                             print(f"  Reconstructed mask with exactly {np.sum(mask_data)} voxels.", flush=True)
+                             
+                         except Exception as e:
+                             print(f"  Reconstruction failed: {e}", flush=True)
+                             
+                     if matched_mask:
+                         print("  Resampling Atlas to Mask space...", flush=True)
+                         
+                         # Update masker to use the matched mask
+                         masker = maskers.NiftiMasker(mask_img=matched_mask)
+                         masker.fit()
+                         
+                         # Resample Atlas to match the Mask
                          # Use nearest neighbor for labels
                          resampled_atlas = image.resample_to_img(
                              atlas_img, 
