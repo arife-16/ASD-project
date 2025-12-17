@@ -63,6 +63,7 @@ def main():
     parser.add_argument("--output_dir", type=str, required=True, help="Directory to save advanced features")
     parser.add_argument("--atlas_labels", type=str, help="Path to atlas labels file (CSV/Excel/TSV) for Network aggregation")
     parser.add_argument("--atlas_img", type=str, help="Path to atlas NIfTI image (for voxel-wise aggregation)")
+    parser.add_argument("--feature_mask", type=str, help="Path to binary mask used for feature extraction (required for voxel-wise aggregation if not standard)")
     parser.add_argument("--top_k_percent", type=float, default=10.0, help="Percentage of top deviations to average (default: 10)")
     parser.add_argument("--use_harmonized", action="store_true", help="Use harmonized Z-scores if available")
     
@@ -193,63 +194,149 @@ def main():
                         
             else:
                  print(f"  WARNING: Feature count ({n_features}) does not match non-zero voxels in atlas ({n_voxels}).", flush=True)
-                 print("  Attempting to align Atlas to Standard MNI152 GM Mask (assuming features are from precision_loader)...", flush=True)
+                 print("  Attempting to align Atlas to Feature Mask...", flush=True)
+                 
                  try:
-                     from nilearn import datasets, input_data
-                     # Fetch the mask used in precision_loader.py
-                     gm_mask = datasets.fetch_icbm152_brain_gm_mask(threshold=0.2)
-                     
-                     # Check 1mm first
-                     masker = input_data.NiftiMasker(mask_img=gm_mask)
-                     masker.fit()
-                     mask_data = masker.mask_img_.get_fdata()
-                     n_gm_voxels = np.sum(mask_data != 0)
+                     from nilearn import datasets, input_data, image
                      
                      matched_mask = None
                      
-                     if n_gm_voxels == n_features:
-                         matched_mask = masker.mask_img_
-                         print(f"  Match found with Standard MNI152 GM Mask (1mm) ({n_gm_voxels} voxels).", flush=True)
-                     else:
-                         # Try 2mm resampling
+                     # 1. Check if user provided a mask
+                     if args.feature_mask and os.path.exists(args.feature_mask):
+                         print(f"  Loading provided feature mask: {args.feature_mask}", flush=True)
+                         user_mask = image.load_img(args.feature_mask)
+                         n_user_voxels = np.sum(user_mask.get_fdata() != 0)
+                         if n_user_voxels == n_features:
+                             matched_mask = user_mask
+                             print(f"  Match found with provided mask ({n_user_voxels} voxels).", flush=True)
+                         else:
+                             print(f"  Provided mask has {n_user_voxels} voxels, but features have {n_features}. Mismatch!", flush=True)
+                     
+                     # 2. If no match, try Standard MNI152 GM Mask (1mm)
+                     if not matched_mask:
+                         print("  Checking Standard MNI152 GM Mask (1mm)...", flush=True)
+                         gm_mask = datasets.fetch_icbm152_brain_gm_mask(threshold=0.2)
+                         masker = input_data.NiftiMasker(mask_img=gm_mask)
+                         masker.fit()
+                         n_gm_voxels = np.sum(masker.mask_img_.get_fdata() != 0)
+                         
+                         if n_gm_voxels == n_features:
+                             matched_mask = masker.mask_img_
+                             print(f"  Match found with Standard MNI152 GM Mask (1mm) ({n_gm_voxels} voxels).", flush=True)
+                     
+                     # 3. If no match, try Standard MNI152 GM Mask (2mm)
+                     if not matched_mask:
+                         print("  Checking Standard MNI152 GM Mask (2mm)...", flush=True)
                          try:
-                             print(f"  No match with 1mm mask ({n_gm_voxels}). Trying 2mm resampling...", flush=True)
-                             # Try to load 2mm template explicitly
+                             # Load 2mm template
                              try:
                                  mni_2mm = datasets.load_mni152_template(resolution=2)
                              except TypeError:
-                                 # Fallback for older nilearn versions
-                                 mni_2mm = datasets.load_mni152_template()
+                                 mni_2mm = datasets.load_mni152_template() # Fallback
                              
                              # Resample GM mask to 2mm
-                             # gm_mask is binary (thresholded), so use nearest
                              gm_mask_2mm = image.resample_to_img(
                                  gm_mask, 
                                  mni_2mm, 
-                                 interpolation='nearest'
+                                 interpolation='nearest',
+                                 copy_header=True,
+                                 force_resample=True
                              )
-
-                             
                              n_gm_2mm = np.sum(gm_mask_2mm.get_fdata() != 0)
+                             
                              if n_gm_2mm == n_features:
                                  matched_mask = gm_mask_2mm
-                                 print(f"  Match found with MNI152 GM Mask Resampled to 2mm ({n_gm_2mm} voxels).", flush=True)
-                                 # Update masker
-                                 masker = input_data.NiftiMasker(mask_img=matched_mask)
-                                 masker.fit()
-                             else:
-                                 print(f"  No match with 2mm mask ({n_gm_2mm}).", flush=True)
-                         except Exception as e2:
-                             print(f"  2mm resampling failed: {e2}", flush=True)
-                     
+                                 print(f"  Match found with Standard MNI152 GM Mask (2mm) ({n_gm_2mm} voxels).", flush=True)
+                         except Exception as e:
+                             print(f"  2mm check failed: {e}", flush=True)
+
+                     # 4. If no match, try Resolution Search (Heuristic)
+                     if not matched_mask:
+                         print("  Searching for matching resolution (1.0mm - 3.0mm)...", flush=True)
+                         
+                         # Heuristic: Estimate required resolution
+                         # vol = count * res^3 => res = (vol / count)^(1/3)
+                         # We assume vol is constant (total brain volume ~ 1.5M mm^3 for GM mask?)
+                         # 1mm mask has 1.5M voxels.
+                         # res_est = 1.0 * (1529112 / n_features)^(1/3)
+                         
+                         base_count = 1529112 # approx for 1mm
+                         est_res = (base_count / n_features) ** (1/3)
+                         print(f"  Estimated resolution: {est_res:.3f}mm", flush=True)
+                         
+                         # Search around estimate
+                         best_diff = float('inf')
+                         best_res = 0
+                         
+                         # Check range [est-0.1, est+0.1] with fine steps
+                         search_range = np.linspace(est_res - 0.2, est_res + 0.2, 41) # 0.01mm steps
+                         
+                         base_affine = gm_mask.affine
+                         
+                         for res in search_range:
+                             # Construct affine with scaled diagonal
+                             # We assume isotropic scaling
+                             s = res # voxel size
+                             # New affine: scaled diagonal
+                             # But we must preserve the FOV center/origin.
+                             # If we just scale the diagonal, we scale the grid spacing.
+                             # To keep the same FOV, we rely on resample_img with target_affine
+                             # But we need to ensure the translation is appropriate?
+                             # Let's try simple scaling first (assuming centered origin)
+                             
+                             # Actually, correct way to change resolution:
+                             # Use identity affine scaled by res? No, we need MNI space.
+                             # Take base affine, scale diagonal by (res / base_res).
+                             # Base res is 1mm (mostly).
+                             
+                             new_affine = base_affine.copy()
+                             # Scale first 3 columns
+                             scale_factor = res # / 1.0
+                             new_affine[:3, :3] *= scale_factor
+                             
+                             # Note: We do NOT change translation. 
+                             # This means the grid expands from (0,0,0) world coordinate.
+                             # If (0,0,0) is in the center of the brain (MNI), this is correct.
+                             
+                             resampled_temp = image.resample_img(
+                                 gm_mask, 
+                                 target_affine=new_affine, 
+                                 interpolation='nearest',
+                                 copy_header=True,
+                                 force_resample=True
+                             )
+                             
+                             count = np.sum(resampled_temp.get_fdata() != 0)
+                             diff = abs(count - n_features)
+                             
+                             if diff < best_diff:
+                                 best_diff = diff
+                                 best_res = res
+                                 if diff == 0:
+                                     matched_mask = resampled_temp
+                                     print(f"  Match found at {res:.3f}mm!", flush=True)
+                                     break
+                         
+                         if not matched_mask and best_diff < 100:
+                             print(f"  Closest match: {best_res:.3f}mm with {best_diff} difference. (Not exact)", flush=True)
+                             # If difference is small, maybe we can't aggregate.
+                             # But let's check if user wants to force it? No.
+                             
                      if matched_mask:
                          print("  Resampling Atlas to Mask space...", flush=True)
                          
+                         # Update masker to use the matched mask
+                         masker = input_data.NiftiMasker(mask_img=matched_mask)
+                         masker.fit()
+                         
                          # Resample Atlas to match the Mask
+                         # Use nearest neighbor for labels
                          resampled_atlas = image.resample_to_img(
                              atlas_img, 
                              masker.mask_img_, 
-                             interpolation='nearest'
+                             interpolation='nearest',
+                             copy_header=True,
+                             force_resample=True
                          )
                          
                          # Extract network labels using the same masker
@@ -264,7 +351,9 @@ def main():
                          
                      else:
                          print(f"  Could not find a mask matching {n_features} features.", flush=True)
+                         print(f"  Closest resolution found: {best_res:.3f}mm (diff: {best_diff})", flush=True)
                          print("  Skipping Voxel Aggregation.", flush=True)
+                         print("  To fix this, please provide the binary mask used for feature extraction using --feature_mask.", flush=True)
 
                          
                  except ImportError:
