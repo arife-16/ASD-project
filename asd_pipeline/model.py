@@ -44,19 +44,30 @@ def build_models() -> List[Pipeline]:
 
 
 def site_stratified_kfold(groups: np.ndarray, y: np.ndarray, n_splits: int = 5, random_state: int = 42):
-    rng = np.random.RandomState(random_state)
     unique_sites = np.unique(groups)
+    classes = np.unique(y)
+    min_class_counts = []
+    for site in unique_sites:
+        idx = np.where(groups == site)[0]
+        ys = y[idx]
+        counts = [np.sum(ys == c) for c in classes]
+        min_class_counts.append(min(counts) if len(counts) > 0 else 0)
+    global_min = int(min(min_class_counts)) if len(min_class_counts) > 0 else 0
+    n_eff = max(2, min(n_splits, global_min))
+    if n_eff < 2:
+        gkf = GroupKFold(n_splits=min(n_splits, len(unique_sites)))
+        return list(gkf.split(np.zeros_like(y), y, groups=groups))
     fold_assign = -np.ones(groups.shape[0], dtype=int)
     for site in unique_sites:
         idx = np.where(groups == site)[0]
         ys = y[idx]
-        skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+        skf = StratifiedKFold(n_splits=n_eff, shuffle=True, random_state=random_state)
         i = 0
         for _, test in skf.split(np.zeros_like(ys), ys):
             fold_assign[idx[test]] = i
             i += 1
     splits = []
-    for f in range(n_splits):
+    for f in range(n_eff):
         test_idx = np.where(fold_assign == f)[0]
         train_idx = np.where(fold_assign != f)[0]
         splits.append((train_idx, test_idx))
