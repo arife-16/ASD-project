@@ -15,6 +15,8 @@ def main():
     parser.add_argument("--output_dir", type=str, required=True, help="Directory to save classification results")
     parser.add_argument("--tune", action="store_true", help="Run hyperparameter tuning (slower)")
     parser.add_argument("--cv_strategy", type=str, default="stratified", choices=["stratified", "site_stratified", "loso"], help="Cross-validation strategy")
+    parser.add_argument("--use_harmonized", action="store_true", help="Use z_scores_harmonized.npy if available")
+    parser.add_argument("--add_summary_features", action="store_true", help="Append summary metrics (mean_abs_z, outlier counts) to feature vector")
     
     args = parser.parse_args()
     
@@ -23,6 +25,11 @@ def main():
     # 1. Load Data
     print("Loading data...", flush=True)
     z_scores_path = os.path.join(args.results_dir, "z_scores.npy")
+    if args.use_harmonized:
+        harm_path = os.path.join(args.results_dir, "z_scores_harmonized.npy")
+        if os.path.exists(harm_path):
+            z_scores_path = harm_path
+            print("Using harmonized z-scores.", flush=True)
     summary_path = os.path.join(args.results_dir, "subjects_summary.csv")
     
     if not os.path.exists(z_scores_path) or not os.path.exists(summary_path):
@@ -70,6 +77,18 @@ def main():
         
     print(f"Class distribution after mapping: {np.bincount(y_bin)} (0=TD, 1=ASD)", flush=True)
     
+    # Optionally augment features with summary metrics
+    if args.add_summary_features:
+        cols = []
+        for c in ["mean_abs_z", "outlier_count_total", "outlier_count_pos", "outlier_count_neg"]:
+            if c in df.columns:
+                cols.append(c)
+        if len(cols) > 0:
+            print(f"Appending summary features: {cols}", flush=True)
+            X = np.hstack([X, df[cols].values])
+        else:
+            print("No summary feature columns found to append.", flush=True)
+
     # 3. Train and Evaluate
     print(f"Starting training with strategy: {args.cv_strategy}...", flush=True)
     
