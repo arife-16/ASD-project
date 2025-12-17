@@ -42,6 +42,7 @@ def build_models() -> List[Pipeline]:
     models.append(Pipeline([("selector", NormDiffSelector(k=1000)), ("gb", GradientBoostingClassifier(n_estimators=300, learning_rate=0.05, max_depth=3, random_state=42))]))
     models.append(Pipeline([("scaler", StandardScaler()), ("selector", NormDiffSelector(k=1000)), ("mlp", MLPClassifier(hidden_layer_sizes=(100,), activation="relu", solver="adam", alpha=0.001, max_iter=1000, random_state=42))]))
     models.append(Pipeline([("scaler", StandardScaler()), ("selector", NormDiffSelector(k=1000)), ("mlp", MLPClassifier(hidden_layer_sizes=(100, 50), activation="relu", solver="adam", alpha=0.001, max_iter=1000, random_state=42))]))
+    models.append(Pipeline([("scaler", StandardScaler()), ("clf", LogisticRegression(C=1.0, penalty="l1", solver="liblinear", class_weight="balanced"))]))
     return models
 
 
@@ -86,7 +87,7 @@ def evaluate_models(X: np.ndarray, y: np.ndarray, cv_strategy: str = "stratified
     else:
         cv = StratifiedKFold(n_splits=cv_splits, shuffle=True, random_state=random_state)
     models = build_models()
-    names = ["logistic_l2", "logistic_elasticnet", "linear_svc_calibrated", "svm_rbf", "random_forest", "svm_rbf_pca", "gradient_boosting", "mlp_1layer", "mlp_2layer"]
+    names = ["logistic_l2", "logistic_elasticnet", "linear_svc_calibrated", "svm_rbf", "random_forest", "svm_rbf_pca", "gradient_boosting", "mlp_1layer", "mlp_2layer", "logistic_l1_all"]
     scoring = {"roc_auc": "roc_auc", "f1": "f1", "accuracy": "accuracy"}
     out: Dict[str, Dict[str, float]] = {}
     for name, model in zip(names, models):
@@ -105,7 +106,7 @@ def evaluate_models_tuned(X: np.ndarray, y: np.ndarray, cv_strategy: str = "stra
     else:
         cv = StratifiedKFold(n_splits=cv_splits, shuffle=True, random_state=random_state)
     models = build_models()
-    names = ["logistic_l2", "logistic_elasticnet", "linear_svc_calibrated", "svm_rbf", "random_forest", "svm_rbf_pca", "gradient_boosting", "mlp_1layer", "mlp_2layer"]
+    names = ["logistic_l2", "logistic_elasticnet", "linear_svc_calibrated", "svm_rbf", "random_forest", "svm_rbf_pca", "gradient_boosting", "mlp_1layer", "mlp_2layer", "logistic_l1_all"]
     grids = {
         "logistic_l2": {"selector__k": [300, 500, 1000], "clf__C": [0.1, 1.0, 10.0]},
         "logistic_elasticnet": {"selector__k": [300, 500, 1000], "clf__C": [0.1, 1.0, 10.0], "clf__l1_ratio": [0.2, 0.5, 0.8]},
@@ -116,6 +117,7 @@ def evaluate_models_tuned(X: np.ndarray, y: np.ndarray, cv_strategy: str = "stra
         "gradient_boosting": {"gb__n_estimators": [200, 300, 500], "gb__learning_rate": [0.03, 0.05, 0.1], "gb__max_depth": [2, 3, 4]},
         "mlp_1layer": {"selector__k": [500, 1000], "mlp__hidden_layer_sizes": [(50,), (100,), (200,)], "mlp__alpha": [0.0001, 0.001, 0.01]},
         "mlp_2layer": {"selector__k": [500, 1000], "mlp__hidden_layer_sizes": [(50, 25), (100, 50), (200, 100)], "mlp__alpha": [0.0001, 0.001, 0.01]},
+        "logistic_l1_all": {"clf__C": [0.01, 0.1, 1.0, 10.0]},
     }
     scoring = {"roc_auc": "roc_auc", "f1": "f1", "accuracy": "accuracy"}
     out: Dict[str, Dict[str, float]] = {}
@@ -150,8 +152,8 @@ class NormDiffSelector(BaseEstimator, TransformerMixin):
             c0, c1 = 0, 1
         else:
             c0, c1 = classes[0], classes[-1]
-        m0 = X[y_arr == c0].mean(axis=0) if np.any(y_arr == c0) else X.mean(axis=0)
-        m1 = X[y_arr == c1].mean(axis=0) if np.any(y_arr == c1) else X.mean(axis=0)
+        m0 = np.mean(np.abs(X[y_arr == c0]), axis=0) if np.any(y_arr == c0) else np.mean(np.abs(X), axis=0)
+        m1 = np.mean(np.abs(X[y_arr == c1]), axis=0) if np.any(y_arr == c1) else np.mean(np.abs(X), axis=0)
         diff = np.abs(m1 - m0)
         self.idx_ = np.argsort(diff)[::-1][: self.k]
         return self
