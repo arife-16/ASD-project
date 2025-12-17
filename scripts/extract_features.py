@@ -321,7 +321,7 @@ def main():
                                      print(f"  Match found at {res:.3f}mm!", flush=True)
                                      break
                          
-                         if not matched_mask and best_diff < 100:
+                        if not matched_mask and best_diff < 100:
                             print(f"  Closest match: {best_res:.3f}mm with {best_diff} difference. (Not exact)", flush=True)
                             
                     # 5. If no match, try Reconstruct Mask from Probability Map (Force Top K)
