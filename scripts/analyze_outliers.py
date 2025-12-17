@@ -101,6 +101,36 @@ def main():
     freq_asd = np.mean(outliers[asd_indices], axis=0)
     freq_td = np.mean(outliers[td_indices], axis=0)
     
+    # --- ADDED: Filter Broken Features ---
+    freq_all = np.mean(outliers, axis=0)
+    broken_mask = freq_all > 0.90
+    n_broken = np.sum(broken_mask)
+    print(f"\n--- Broken Feature Detection ---", flush=True)
+    print(f"Found {n_broken} features that are outliers in >90% of ALL subjects.", flush=True)
+    if n_broken > 0:
+        print("These are likely artifacts (e.g., constant 0 in training, leading to tiny std).", flush=True)
+        print("Recalculating counts excluding these features...", flush=True)
+        
+        valid_mask = ~broken_mask
+        clean_outliers = outliers[:, valid_mask]
+        clean_counts = np.sum(clean_outliers, axis=1)
+        df["clean_outlier_count"] = clean_counts
+        
+        print(f"Cleaned Mean Outliers: {np.mean(clean_counts):.2f} (Total Valid Features: {np.sum(valid_mask)})", flush=True)
+        
+        mean_asd_clean = np.mean(clean_counts[asd_indices])
+        mean_td_clean = np.mean(clean_counts[td_indices])
+        print(f"Cleaned Mean ASD: {mean_asd_clean:.2f}, Cleaned Mean TD: {mean_td_clean:.2f}", flush=True)
+        
+        # Plot Cleaned Counts
+        plt.figure(figsize=(8, 6))
+        sns.boxplot(data=df, x="is_asd", y="clean_outlier_count")
+        plt.xticks([0, 1], ["TD", "ASD"])
+        plt.title(f"Outlier Count (Excluding {n_broken} Broken Features)")
+        plt.savefig(os.path.join(args.output_dir, "clean_outlier_boxplot.png"))
+        plt.close()
+    # -------------------------------------
+    
     diff_map = freq_asd - freq_td
     
     # Save Map Data
