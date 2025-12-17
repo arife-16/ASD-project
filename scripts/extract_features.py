@@ -158,53 +158,120 @@ def main():
             non_zero_mask = flat_atlas != 0
             n_voxels = np.sum(non_zero_mask)
             
+            # Helper to run aggregation
+            def aggregate_by_network(voxel_nets, feature_z, names_map):
+                unique_nets = np.unique(voxel_nets)
+                for net_id in unique_nets:
+                    if net_id == 0: continue
+                    mask = (voxel_nets == net_id)
+                    if np.sum(mask) > 0:
+                        net_z_vals = feature_z[:, mask]
+                        net_name = names_map.get(int(net_id), f"Network_{int(net_id)}")
+                        net_name = str(net_name).replace(" ", "_").replace("-", "_")
+                        features_df[f"net_mean_{net_name}"] = np.mean(net_z_vals, axis=1)
+
+            # Get network names map
+            net_names = {}
+            if args.atlas_labels and os.path.exists(args.atlas_labels):
+                try:
+                    lbl_df = load_atlas_labels(args.atlas_labels)
+                    index_col = next((c for c in lbl_df.columns if 'index' in c or 'id' in c), None)
+                    if index_col:
+                        for _, row in lbl_df.iterrows():
+                            net_names[int(row[index_col])] = str(row['network'])
+                    else:
+                        for i, row in enumerate(lbl_df.itertuples()):
+                            net_names[i+1] = str(row.network)
+                except Exception as e:
+                    print(f"  Warning: Could not load network names from TSV: {e}", flush=True)
+
             if n_voxels == n_features:
                 print(f"  Feature count ({n_features}) matches non-zero voxels in atlas image.", flush=True)
                 print("  Aggregating voxel-wise Z-scores by Network...", flush=True)
-                
-                # Get network labels for each voxel
                 voxel_networks = flat_atlas[non_zero_mask]
-                unique_networks = np.unique(voxel_networks)
-                
-                # Map network IDs to names if TSV provided
-                net_names = {}
-                if args.atlas_labels and os.path.exists(args.atlas_labels):
-                    try:
-                        lbl_df = load_atlas_labels(args.atlas_labels)
-                        # Assuming TSV has 'index' or 'label' matching the integer values in NIfTI
-                        # If 'index' column exists, use it. Else assume row order + 1?
-                        # Yeo TSV usually has 'Network' name.
-                        # Let's try to find a mapping.
-                        # Common Yeo TSV: "7Networks_1", "7Networks_2"...
-                        # The NIfTI usually has 1..7 or 1..17.
-                        
-                        # Heuristic: Create a map {int_id: name}
-                        # If 'index' col exists:
-                        index_col = next((c for c in lbl_df.columns if 'index' in c or 'id' in c), None)
-                        if index_col:
-                            for _, row in lbl_df.iterrows():
-                                net_names[int(row[index_col])] = str(row['network'])
-                        else:
-                            # Assume 1-based indexing
-                            for i, row in enumerate(lbl_df.itertuples()):
-                                net_names[i+1] = str(row.network)
-                                
-                    except Exception as e:
-                        print(f"  Warning: Could not load network names from TSV: {e}", flush=True)
-                
-                for net_id in unique_networks:
-                    if net_id == 0: continue # Should be excluded by non_zero_mask anyway
-                    
-                    mask = (voxel_networks == net_id)
-                    if np.sum(mask) > 0:
-                        net_z = abs_z[:, mask]
-                        name = net_names.get(int(net_id), f"Network_{int(net_id)}")
-                        # Clean name
-                        name = name.replace(" ", "_").replace("-", "_")
-                        features_df[f"net_mean_{name}"] = np.mean(net_z, axis=1)
+                aggregate_by_network(voxel_networks, abs_z, net_names)
                         
             else:
-                 print(f"  WARNING: Feature count ({n_features}) does not match non-zero voxels in atlas ({n_voxels}). Skipping Voxel Aggregation.", flush=True)
+                 print(f"  WARNING: Feature count ({n_features}) does not match non-zero voxels in atlas ({n_voxels}).", flush=True)
+                 print("  Attempting to align Atlas to Standard MNI152 GM Mask (assuming features are from precision_loader)...", flush=True)
+                 try:
+                     from nilearn import datasets, input_data
+                     # Fetch the mask used in precision_loader.py
+                     gm_mask = datasets.fetch_icbm152_brain_gm_mask(threshold=0.2)
+                     
+                     # Check 1mm first
+                     masker = input_data.NiftiMasker(mask_img=gm_mask)
+                     masker.fit()
+                     mask_data = masker.mask_img_.get_fdata()
+                     n_gm_voxels = np.sum(mask_data != 0)
+                     
+                     matched_mask = None
+                     
+                     if n_gm_voxels == n_features:
+                         matched_mask = masker.mask_img_
+                         print(f"  Match found with Standard MNI152 GM Mask (1mm) ({n_gm_voxels} voxels).", flush=True)
+                     else:
+                         # Try 2mm resampling
+                         try:
+                             print(f"  No match with 1mm mask ({n_gm_voxels}). Trying 2mm resampling...", flush=True)
+                             # Try to load 2mm template explicitly
+                             try:
+                                 mni_2mm = datasets.load_mni152_template(resolution=2)
+                             except TypeError:
+                                 # Fallback for older nilearn versions
+                                 mni_2mm = datasets.load_mni152_template()
+                             
+                             # Resample GM mask to 2mm
+                             # gm_mask is binary (thresholded), so use nearest
+                             gm_mask_2mm = image.resample_to_img(
+                                 gm_mask, 
+                                 mni_2mm, 
+                                 interpolation='nearest'
+                             )
+
+                             
+                             n_gm_2mm = np.sum(gm_mask_2mm.get_fdata() != 0)
+                             if n_gm_2mm == n_features:
+                                 matched_mask = gm_mask_2mm
+                                 print(f"  Match found with MNI152 GM Mask Resampled to 2mm ({n_gm_2mm} voxels).", flush=True)
+                                 # Update masker
+                                 masker = input_data.NiftiMasker(mask_img=matched_mask)
+                                 masker.fit()
+                             else:
+                                 print(f"  No match with 2mm mask ({n_gm_2mm}).", flush=True)
+                         except Exception as e2:
+                             print(f"  2mm resampling failed: {e2}", flush=True)
+                     
+                     if matched_mask:
+                         print("  Resampling Atlas to Mask space...", flush=True)
+                         
+                         # Resample Atlas to match the Mask
+                         resampled_atlas = image.resample_to_img(
+                             atlas_img, 
+                             masker.mask_img_, 
+                             interpolation='nearest'
+                         )
+                         
+                         # Extract network labels using the same masker
+                         # This ensures the order of voxels matches the features
+                         voxel_networks = masker.transform(resampled_atlas).ravel()
+                         
+                         # Fix: masker.transform output might be float, convert to int
+                         voxel_networks = np.round(voxel_networks).astype(int)
+                         
+                         print("  Aggregating voxel-wise Z-scores by Network (Aligned)...", flush=True)
+                         aggregate_by_network(voxel_networks, abs_z, net_names)
+                         
+                     else:
+                         print(f"  Could not find a mask matching {n_features} features.", flush=True)
+                         print("  Skipping Voxel Aggregation.", flush=True)
+
+                         
+                 except ImportError:
+                     print("  nilearn not installed or error importing datasets.", flush=True)
+                 except Exception as e:
+                     print(f"  Alignment failed: {e}", flush=True)
+
                  
         except ImportError:
             print("  Error: nilearn not installed. Cannot load NIfTI atlas.", flush=True)
