@@ -61,7 +61,8 @@ def main():
     parser = argparse.ArgumentParser(description="Extract advanced features from Normative Model Z-scores")
     parser.add_argument("--results_dir", type=str, required=True, help="Directory containing z_scores.npy")
     parser.add_argument("--output_dir", type=str, required=True, help="Directory to save advanced features")
-    parser.add_argument("--atlas_labels", type=str, help="Path to atlas labels file (CSV/Excel) for Network aggregation")
+    parser.add_argument("--atlas_labels", type=str, help="Path to atlas labels file (CSV/Excel/TSV) for Network aggregation")
+    parser.add_argument("--atlas_img", type=str, help="Path to atlas NIfTI image (for voxel-wise aggregation)")
     parser.add_argument("--top_k_percent", type=float, default=10.0, help="Percentage of top deviations to average (default: 10)")
     parser.add_argument("--use_harmonized", action="store_true", help="Use harmonized Z-scores if available")
     
@@ -140,7 +141,77 @@ def main():
         features_df[f"mean_top_{int(k_percent)}_percent_nll"] = np.mean(top_k_nll, axis=1)
         
     # --- Feature 3: Network-Level Aggregation ---
-    if args.atlas_labels and os.path.exists(args.atlas_labels):
+    if args.atlas_img and os.path.exists(args.atlas_img):
+        print(f"Loading atlas image from {args.atlas_img}...", flush=True)
+        try:
+            from nilearn import image
+            atlas_img = image.load_img(args.atlas_img)
+            atlas_data = atlas_img.get_fdata()
+            
+            # Assuming mask is 0=Background, 1..K=Networks
+            # Flatten atlas data to match feature dimension?
+            # Warning: This assumes z_scores are voxels extracted using the SAME mask order.
+            # Usually NiftiLabelsMasker or NiftiMasker.
+            # If NiftiMasker was used with this atlas as mask, then features = non-zero voxels.
+            
+            flat_atlas = atlas_data.ravel()
+            non_zero_mask = flat_atlas != 0
+            n_voxels = np.sum(non_zero_mask)
+            
+            if n_voxels == n_features:
+                print(f"  Feature count ({n_features}) matches non-zero voxels in atlas image.", flush=True)
+                print("  Aggregating voxel-wise Z-scores by Network...", flush=True)
+                
+                # Get network labels for each voxel
+                voxel_networks = flat_atlas[non_zero_mask]
+                unique_networks = np.unique(voxel_networks)
+                
+                # Map network IDs to names if TSV provided
+                net_names = {}
+                if args.atlas_labels and os.path.exists(args.atlas_labels):
+                    try:
+                        lbl_df = load_atlas_labels(args.atlas_labels)
+                        # Assuming TSV has 'index' or 'label' matching the integer values in NIfTI
+                        # If 'index' column exists, use it. Else assume row order + 1?
+                        # Yeo TSV usually has 'Network' name.
+                        # Let's try to find a mapping.
+                        # Common Yeo TSV: "7Networks_1", "7Networks_2"...
+                        # The NIfTI usually has 1..7 or 1..17.
+                        
+                        # Heuristic: Create a map {int_id: name}
+                        # If 'index' col exists:
+                        index_col = next((c for c in lbl_df.columns if 'index' in c or 'id' in c), None)
+                        if index_col:
+                            for _, row in lbl_df.iterrows():
+                                net_names[int(row[index_col])] = str(row['network'])
+                        else:
+                            # Assume 1-based indexing
+                            for i, row in enumerate(lbl_df.itertuples()):
+                                net_names[i+1] = str(row.network)
+                                
+                    except Exception as e:
+                        print(f"  Warning: Could not load network names from TSV: {e}", flush=True)
+                
+                for net_id in unique_networks:
+                    if net_id == 0: continue # Should be excluded by non_zero_mask anyway
+                    
+                    mask = (voxel_networks == net_id)
+                    if np.sum(mask) > 0:
+                        net_z = abs_z[:, mask]
+                        name = net_names.get(int(net_id), f"Network_{int(net_id)}")
+                        # Clean name
+                        name = name.replace(" ", "_").replace("-", "_")
+                        features_df[f"net_mean_{name}"] = np.mean(net_z, axis=1)
+                        
+            else:
+                 print(f"  WARNING: Feature count ({n_features}) does not match non-zero voxels in atlas ({n_voxels}). Skipping Voxel Aggregation.", flush=True)
+                 
+        except ImportError:
+            print("  Error: nilearn not installed. Cannot load NIfTI atlas.", flush=True)
+        except Exception as e:
+            print(f"  Error processing NIfTI atlas: {e}", flush=True)
+
+    elif args.atlas_labels and os.path.exists(args.atlas_labels):
         print(f"Loading atlas labels from {args.atlas_labels}...", flush=True)
         atlas_df = load_atlas_labels(args.atlas_labels)
         n_regions = len(atlas_df)
