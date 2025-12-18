@@ -202,6 +202,19 @@ def main():
                 plt.tight_layout()
                 plt.savefig(os.path.join(args.output_dir, "network_diff_bar_fdr.png"))
                 plt.close()
+                
+                vdf = stats_df.copy()
+                vdf["neglog10_p"] = -np.log10(vdf["p_fdr"].replace(0, np.nextafter(0, 1)))
+                plt.figure(figsize=(10, 7))
+                sig_mask = vdf["significant_fdr"].values
+                plt.scatter(vdf.loc[~sig_mask, "cohen_d"], vdf.loc[~sig_mask, "neglog10_p"], c="gray", alpha=0.7)
+                plt.scatter(vdf.loc[sig_mask, "cohen_d"], vdf.loc[sig_mask, "neglog10_p"], c="crimson", alpha=0.9)
+                plt.xlabel("Effect size (Cohen's d)")
+                plt.ylabel("-log10(FDR-adjusted p)")
+                plt.title("Volcano Plot: Effect Size vs FDR-adjusted Significance")
+                plt.tight_layout()
+                plt.savefig(os.path.join(args.output_dir, "network_volcano_fdr.png"))
+                plt.close()
     
     print(f"Plots saved to {args.output_dir}", flush=True)
 
