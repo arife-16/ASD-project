@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+from scipy import stats
+from statsmodels.stats.multitest import multipletests
 
 def main():
     parser = argparse.ArgumentParser(description="Visualize Normative Model Results")
@@ -152,6 +154,52 @@ def main():
             plt.close()
         else:
             print("No 'net_mean_' columns found in advanced features; skipping network plots.", flush=True)
+        
+        if "Diagnosis" in df.columns:
+            net_cols = [c for c in df.columns if c.startswith("net_mean_")]
+            stats_rows = []
+            for c in net_cols:
+                a = df.loc[df["Diagnosis"] == "ASD", c].dropna().values
+                t = df.loc[df["Diagnosis"] == "TD", c].dropna().values
+                if len(a) > 1 and len(t) > 1:
+                    u_res = stats.mannwhitneyu(a, t, alternative="two-sided")
+                    m_asd = float(np.mean(a))
+                    m_td = float(np.mean(t))
+                    s_asd = float(np.std(a, ddof=1))
+                    s_td = float(np.std(t, ddof=1))
+                    n_asd = int(len(a))
+                    n_td = int(len(t))
+                    pooled = np.sqrt(((n_asd - 1) * s_asd**2 + (n_td - 1) * s_td**2) / (n_asd + n_td - 2)) if (n_asd + n_td - 2) > 0 else np.nan
+                    d = (m_asd - m_td) / pooled if pooled and pooled > 0 else np.nan
+                    stats_rows.append({
+                        "network": c,
+                        "n_asd": n_asd,
+                        "n_td": n_td,
+                        "mean_asd": m_asd,
+                        "mean_td": m_td,
+                        "diff": m_asd - m_td,
+                        "u_stat": float(u_res.statistic),
+                        "p_value": float(u_res.pvalue),
+                        "cohen_d": d
+                    })
+            if stats_rows:
+                stats_df = pd.DataFrame(stats_rows)
+                reject, p_fdr, _, _ = multipletests(stats_df["p_value"].values, method="fdr_bh")
+                stats_df["p_fdr"] = p_fdr
+                stats_df["significant_fdr"] = reject
+                out_csv = os.path.join(args.output_dir, "network_stats.csv")
+                stats_df.to_csv(out_csv, index=False)
+                
+                order = stats_df.sort_values("diff", ascending=False)
+                plt.figure(figsize=(12, 8))
+                colors = ["crimson" if s else "gray" for s in order["significant_fdr"].values]
+                plt.bar(order["network"].values, order["diff"].values, color=colors)
+                plt.xticks(rotation=45, ha="right")
+                plt.ylabel("ASD - TD Mean Difference")
+                plt.title("Network Mean Differences (ASD vs TD), FDR-highlighted")
+                plt.tight_layout()
+                plt.savefig(os.path.join(args.output_dir, "network_diff_bar_fdr.png"))
+                plt.close()
     
     print(f"Plots saved to {args.output_dir}", flush=True)
 
