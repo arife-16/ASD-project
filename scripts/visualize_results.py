@@ -69,16 +69,18 @@ def main():
     plt.close()
     
     # 2. Boxplot by Site
-    print("Generating site comparison...", flush=True)
-    plt.figure(figsize=(14, 8))
-    # Sort sites by median deviation
-    site_order = df.groupby("SITE_ID")["mean_abs_z"].median().sort_values().index
-    sns.boxplot(data=df, x="SITE_ID", y="mean_abs_z", order=site_order)
-    plt.xticks(rotation=45, ha="right")
-    plt.title("Global Deviation by Site")
-    plt.tight_layout()
-    plt.savefig(os.path.join(args.output_dir, "site_deviation_boxplot.png"))
-    plt.close()
+    if "SITE_ID" in df.columns:
+        print("Generating site comparison...", flush=True)
+        plt.figure(figsize=(14, 8))
+        site_order = df.groupby("SITE_ID")["mean_abs_z"].median().sort_values().index
+        sns.boxplot(data=df, x="SITE_ID", y="mean_abs_z", order=site_order)
+        plt.xticks(rotation=45, ha="right")
+        plt.title("Global Deviation by Site")
+        plt.tight_layout()
+        plt.savefig(os.path.join(args.output_dir, "site_deviation_boxplot.png"))
+        plt.close()
+    else:
+        print("SITE_ID column not found in summary; skipping site comparison plot.", flush=True)
     
     # 3. Violin Plot of Deviation by Diagnosis
     print("Generating diagnosis comparison...", flush=True)
